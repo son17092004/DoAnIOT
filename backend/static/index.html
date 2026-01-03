@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Face Attendance System</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --primary: #3b82f6;
+            --success: #10b981;
+            --danger: #ef4444;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            background-image: radial-gradient(at 0% 0%, hsla(253,16%,7%,1) 0, transparent 50%), 
+                              radial-gradient(at 50% 0%, hsla(225,39%,30%,1) 0, transparent 50%), 
+                              radial-gradient(at 100% 0%, hsla(339,49%,30%,1) 0, transparent 50%);
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 3rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            background: linear-gradient(to right, #60a5fa, #a78bfa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin: 0;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 2rem;
+        }
+
+        .card {
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 1rem;
+            padding: 1.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        h2 {
+            margin-top: 0;
+            font-size: 1.25rem;
+            color: var(--text-main);
+            margin-bottom: 1.5rem;
+        }
+
+        /* Forms */
+        .form-group {
+            margin-bottom: 1rem;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        input[type="text"], input[type="file"] {
+            width: 100%;
+            padding: 0.75rem;
+            border-radius: 0.5rem;
+            background: rgba(15, 23, 42, 0.5);
+            border: 1px solid rgba(255,255,255,0.1);
+            color: white;
+            box-sizing: border-box;
+        }
+
+        button {
+            width: 100%;
+            padding: 0.75rem;
+            border-radius: 0.5rem;
+            border: none;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+        .btn-primary:hover { background: #2563eb; }
+
+        .btn-success {
+            background: var(--success);
+            color: white;
+        }
+        .btn-success:hover { background: #059669; }
+
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+        .btn-danger:hover { background: #dc2626; }
+
+        /* Status Badge */
+        .status-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .status-active { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+        .status-inactive { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+
+        /* Table */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+        
+        th, td {
+            text-align: left;
+            padding: 1rem;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+
+        th {
+            color: var(--text-muted);
+            font-weight: 500;
+            font-size: 0.875rem;
+        }
+
+        /* Toast */
+        #toast {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            padding: 1rem 2rem;
+            border-radius: 0.5rem;
+            background: var(--card-bg);
+            border: 1px solid rgba(255,255,255,0.1);
+            color: white;
+            transform: translateY(150%);
+            transition: transform 0.3s ease;
+        }
+        #toast.show { transform: translateY(0); }
+
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <header>
+            <h1>Face Attendance IoT</h1>
+            <div id="session-status">
+                <span class="status-badge status-inactive" id="status-text">Session Inactive</span>
+            </div>
+        </header>
+
+        <div class="grid">
+            <!-- Left Column: Controls -->
+            <div class="controls">
+                <!-- Session Control -->
+                <div class="card" style="margin-bottom: 2rem;">
+                    <h2>Session Control</h2>
+                    <div class="form-group">
+                        <label>Session Name</label>
+                        <input type="text" id="sessionName" placeholder="e.g., Class IoT - Dec 03">
+                    </div>
+                    <button id="btnStart" class="btn-success" onclick="startSession()">Start Attendance</button>
+                    <button id="btnStop" class="btn-danger" onclick="stopSession()" style="display: none;">Stop Session</button>
+                </div>
+
+                <!-- Registration -->
+                <div class="card">
+                    <h2>Register Student</h2>
+                    <div class="form-group">
+                        <label>Full Name</label>
+                        <input type="text" id="regName" placeholder="Nguyen Van A">
+                    </div>
+                    <div class="form-group">
+                        <label>Student ID</label>
+                        <input type="text" id="regId" placeholder="20201234">
+                    </div>
+                    <div class="form-group">
+                        <label>Photo (Clear face)</label>
+                        <input type="file" id="regPhoto" accept="image/*">
+                    </div>
+                    <button class="btn-primary" onclick="registerStudent()">Register</button>
+                </div>
+            </div>
+
+            <!-- Right Column: Live List -->
+            <div class="card">
+                <h2>Live Attendance</h2>
+                <div id="attendee-list">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Photo</th>
+                                <th>Time</th>
+                                <th>Student ID</th>
+                                <th>Name</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tableBody">
+                            <!-- Rows will be added here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Security Logs Column (Added) -->
+             <div class="card" style="margin-top: 2rem; border-color: #ef4444;">
+                <h2 style="color: #ef4444; display: flex; align-items: center; gap: 10px;">
+                    <span style="background: #ef4444; width: 10px; height: 10px; border-radius: 50%; display: inline-block;"></span>
+                    Security Logs (Rejected Spoofs)
+                </h2>
+                <div id="spoof-list" style="max-height: 400px; overflow-y: auto;">
+                    <table style="margin-top: 0.5rem;">
+                        <thead>
+                            <tr>
+                                <th>Capture</th>
+                                <th>Timestamp</th>
+                                <th>Alert Type</th>
+                            </tr>
+                        </thead>
+                        <tbody id="spoofTableBody">
+                            <!-- Spoof Rows -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast">Notification</div>
+
+    <script>
+        const API_URL = "http://localhost:8080/api";
+        let currentSessionId = null;
+        let pollInterval = null;
+
+        // Check initial status
+        checkSessionStatus();
+
+        async function checkSessionStatus() {
+            try {
+                const res = await fetch(`${API_URL}/session/current`);
+                const data = await res.json();
+                if (data.active) {
+                    currentSessionId = data.session_id;
+                    setSessionActive(true);
+                    startPolling();
+                } else {
+                    setSessionActive(false);
+                }
+            } catch (e) {
+                console.error("Error checking status", e);
+            }
+        }
+
+        function setSessionActive(isActive) {
+            const statusText = document.getElementById('status-text');
+            const btnStart = document.getElementById('btnStart');
+            const btnStop = document.getElementById('btnStop');
+            const sessionInput = document.getElementById('sessionName');
+
+            if (isActive) {
+                statusText.textContent = "Session Active";
+                statusText.className = "status-badge status-active";
+                btnStart.style.display = "none";
+                btnStop.style.display = "block";
+                sessionInput.disabled = true;
+            } else {
+                statusText.textContent = "Session Inactive";
+                statusText.className = "status-badge status-inactive";
+                btnStart.style.display = "block";
+                btnStop.style.display = "none";
+                sessionInput.disabled = false;
+                sessionInput.value = "";
+                stopPolling();
+            }
+        }
+
+        async function startSession() {
+            const name = document.getElementById('sessionName').value;
+            if (!name) return showToast("Please enter session name");
+
+            const formData = new FormData();
+            formData.append('session_name', name);
+
+            try {
+                const res = await fetch(`${API_URL}/session/start`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    currentSessionId = data.session_id;
+                    setSessionActive(true);
+                    startPolling();
+                    showToast("Session Started");
+                }
+            } catch (e) {
+                showToast("Error starting session");
+            }
+        }
+
+        async function stopSession() {
+            try {
+                await fetch(`${API_URL}/session/stop`, { method: 'POST' });
+                setSessionActive(false);
+                showToast("Session Stopped");
+            } catch (e) {
+                showToast("Error stopping session");
+            }
+        }
+
+        async function registerStudent() {
+            const name = document.getElementById('regName').value;
+            const id = document.getElementById('regId').value;
+            const file = document.getElementById('regPhoto').files[0];
+
+            if (!name || !id || !file) return showToast("Please fill all fields");
+
+            const formData = new FormData();
+            formData.append('name', name);
+            formData.append('student_id', id);
+            formData.append('file', file);
+
+            try {
+                showToast("Registering... please wait");
+                const res = await fetch(`${API_URL}/register`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    showToast("Registration Successful!");
+                    document.getElementById('regName').value = '';
+                    document.getElementById('regId').value = '';
+                    document.getElementById('regPhoto').value = '';
+                } else {
+                    showToast("Error: " + data.detail);
+                }
+            } catch (e) {
+                showToast("Error registering student");
+            }
+        }
+
+        function startPolling() {
+            if (pollInterval) clearInterval(pollInterval);
+            updateAttendanceList(); // run immediately
+            updateSpoofLogs();
+            pollInterval = setInterval(() => {
+                updateAttendanceList();
+                updateSpoofLogs();
+            }, 3000);
+        }
+
+        function stopPolling() {
+            if (pollInterval) clearInterval(pollInterval);
+            pollInterval = null;
+        }
+
+        async function updateAttendanceList() {
+            if (!currentSessionId) return;
+            try {
+                const res = await fetch(`${API_URL}/session/${currentSessionId}`);
+                const data = await res.json();
+                
+                const tbody = document.getElementById('tableBody');
+                tbody.innerHTML = '';
+
+                // Sort by timestamp desc
+                const attendees = data.attendees.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+                attendees.forEach(student => {
+                    const row = document.createElement('tr');
+                    const time = new Date(student.timestamp).toLocaleTimeString();
+                    const imgHtml = student.image_url 
+                        ? `<img src="${student.image_url}" style="width: 50px; height: 50px; object-fit: cover; border-radius: 4px;">` 
+                        : '<span style="color: #64748b; font-size: 0.8em;">No Photo</span>';
+                    
+                    row.innerHTML = `
+                        <td>${imgHtml}</td>
+                        <td>${time}</td>
+                        <td>${student.student_id}</td>
+                        <td>${student.name}</td>
+                        <td><span class="status-badge status-active">Present</span></td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            } catch (e) {
+                console.error("Polling error", e);
+            }
+        }
+
+        async function updateSpoofLogs() {
+            try {
+                const res = await fetch(`${API_URL}/spoofs`);
+                const logs = await res.json();
+                
+                const tbody = document.getElementById('spoofTableBody');
+                tbody.innerHTML = ''; // Clear and redraw (optimization: define simpler diffing if list huge)
+
+                logs.forEach(log => {
+                    const row = document.createElement('tr');
+                    
+                    row.innerHTML = `
+                        <td>
+                            <a href="${log.url}" target="_blank">
+                                <img src="${log.url}" style="width: 60px; height: 60px; object-fit: cover; border-radius: 4px; border: 2px solid #ef4444;">
+                            </a>
+                        </td>
+                        <td>${log.timestamp}</td>
+                        <td><span class="status-badge status-inactive">FAKE FACE DETECTED</span></td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            } catch (e) {
+                console.error("Spoof Log error", e);
+            }
+        }
+
+        function showToast(msg) {
+            const toast = document.getElementById('toast');
+            toast.textContent = msg;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 3000);
+        }
+    </script>
+</body>
+</html>

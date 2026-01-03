@@ -1,0 +1,7 @@
+Bước 1: Face Detection (Phát hiện khuôn mặt)
+Bước 2: Face Alignment (Căn chỉnh - Quan trọng)
+Bước 3: Feature Extraction (Trích xuất đặc trưng)
+Xây dựng pipeline điểm danh bằng khuôn mặt
+Lưu data vào mongodb student(vector features, tên), buổi học (tên buổi học, sinh viên có mặt vắng), làm sơ sơ vì mục đích chính là điểm danh
+Backend (fastapi)
+Luồng: ESP-CAM32 chụp ảnh và gửi ảnh về server, server xử lý và gửi ngược lại espesp

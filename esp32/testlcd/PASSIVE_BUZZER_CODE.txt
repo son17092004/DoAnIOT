@@ -1,0 +1,18 @@
+// CODE DỰ PHÒNG CHO PASSIVE BUZZER
+// Chỉ dùng nếu test buzzer thấy nó là Passive (không kêu khi nối trực tiếp pin)
+
+// Trong setup():
+pinMode(SPEAKER_PIN, OUTPUT);
+ledcAttach(SPEAKER_PIN, 2000, 8);
+ledcWrite(SPEAKER_PIN, 0); // Đảm bảo tắt
+
+// Hàm playBeep cho PASSIVE BUZZER:
+void playBeep(int dutyCycle, int duration) {
+  ledcWrite(SPEAKER_PIN, dutyCycle);
+  delay(duration);
+  ledcWrite(SPEAKER_PIN, 0); // Quan trọng: Phải về 0
+  ledcDetach(SPEAKER_PIN);    // Detach PWM sau khi dùng
+  delay(10);
+  ledcAttach(SPEAKER_PIN, 2000, 8); // Attach lại cho lần sau
+}
+
