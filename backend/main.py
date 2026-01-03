@@ -162,7 +162,7 @@ async def register_student(name: str = Form(...), student_id: str = Form(...), f
     
     return {"status": "success", "student_id": new_id, "message": f"Student {name} registered successfully"}
 
-# --- Recognition Endpoint (for ESP32) ---
+# --- Recognition Endpoint (for ESP32) - TĂNG TỐC ---
 @app.post("/api/recognize")
 async def recognize_face(file: UploadFile = File(...)):
     global CURRENT_SESSION_ID, ANTISPOOF_MODEL, LAST_RECOGNITION_RESULT
@@ -170,25 +170,31 @@ async def recognize_face(file: UploadFile = File(...)):
     # QUAN TRỌNG: Chỉ nhận diện khi có session active
     if not CURRENT_SESSION_ID:
         LAST_RECOGNITION_RESULT = {"timestamp": datetime.now().timestamp(), "message": "Chua bat dau"}
-        return {"status": "error", "message": "No active session. Please start a session first."}
+        return JSONResponse(
+            status_code=200,
+            content={"status": "error", "message": "No active session. Please start a session first."}
+        )
 
+    # Đọc file nhanh hơn với chunk size lớn
     contents = await file.read()
     nparr = np.frombuffer(contents, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     
     if img is None:
-        raise HTTPException(status_code=400, detail="Invalid image file")
+        LAST_RECOGNITION_RESULT = {"timestamp": datetime.now().timestamp(), "message": "Loi anh"}
+        return JSONResponse(
+            status_code=200,
+            content={"status": "failed", "message": "Invalid image file"}
+        )
 
-    # 1. Detect & Extract
-    # Anti-Spoofing Check FIRST
-    # We pass the full image. Implementation in face_utils works better with full image + crop logic 
-    # but here we don't have bounding box yet (detect_face returns it).
-    # Let's detect face location first for better cropping
-    
+    # 1. Detect & Extract (TĂNG TỐC)
     face_locations = detect_face(img)
     if not face_locations:
         LAST_RECOGNITION_RESULT = {"timestamp": datetime.now().timestamp(), "message": "Ko phat hien"}
-        return {"status": "failed", "message": "No face detected"}
+        return JSONResponse(
+            status_code=200,
+            content={"status": "failed", "message": "No face detected"}
+        )
     
     # Take first face
     top, right, bottom, left = face_locations[0]
@@ -210,12 +216,15 @@ async def recognize_face(file: UploadFile = File(...)):
 
             LAST_RECOGNITION_RESULT = {"timestamp": datetime.now().timestamp(), "message": "GIA MAO (FAKE)"}
             
-            return {
-                "status": "failed", 
-                "match": False, 
-                "message": "Spoof detected (Fake Face)",
-                "liveness_score": score
-            }
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "failed", 
+                    "match": False, 
+                    "message": "Spoof detected (Fake Face)",
+                    "liveness_score": score
+                }
+            )
 
     # If Real (or no model), proceed to recognition
     embedding = get_face_embedding(img, face_location=face_loc)
@@ -224,7 +233,10 @@ async def recognize_face(file: UploadFile = File(...)):
     
     if embedding is None:
         LAST_RECOGNITION_RESULT = {"timestamp": datetime.now().timestamp(), "message": "Loi trich xuat"}
-        return {"status": "failed", "message": "Could not extract features"}
+        return JSONResponse(
+            status_code=200,
+            content={"status": "failed", "message": "Could not extract features"}
+        )
         
     # 2. Match
     all_students = get_all_students()
@@ -251,13 +263,22 @@ async def recognize_face(file: UploadFile = File(...)):
         
         if marked:
             print(f"MARKED: {match['name']}")
-            return {"status": "success", "match": True, "name": match["name"], "message": "Attendance marked"}
+            return JSONResponse(
+                status_code=200,
+                content={"status": "success", "match": True, "name": match["name"], "message": "Attendance marked"}
+            )
         else:
             print(f"ALREADY MARKED: {match['name']}")
-            return {"status": "success", "match": True, "name": match["name"], "message": "Already marked"}
+            return JSONResponse(
+                status_code=200,
+                content={"status": "success", "match": True, "name": match["name"], "message": "Already marked"}
+            )
     
     LAST_RECOGNITION_RESULT = {"timestamp": datetime.now().timestamp(), "message": "Khong nhan ra"}
-    return {"status": "failed", "match": False, "message": "Unknown person"}
+    return JSONResponse(
+        status_code=200,
+        content={"status": "failed", "match": False, "message": "Unknown person"}
+    )
 
 # --- Security Logs Endpoint ---
 @app.get("/api/spoofs")
@@ -303,14 +324,16 @@ if __name__ == "__main__":
     print("API Docs: http://localhost:8080/docs")
     print("=" * 60)
     
-    # Tăng timeout và workers để xử lý upload ảnh lớn
+    # Tối ưu server cho tốc độ cao
     import uvicorn
     uvicorn.run(
         "main:app", 
         host="0.0.0.0", 
         port=8080, 
         reload=True,
-        timeout_keep_alive=30,  # Tăng timeout
-        limit_concurrency=10,   # Giới hạn concurrent connections
-        limit_max_requests=1000 # Restart sau 1000 requests để clear memory
+        timeout_keep_alive=20,   # Giảm từ 30s → 20s (đủ cho ESP32)
+        limit_concurrency=20,    # Tăng từ 10 → 20 (xử lý nhiều requests hơn)
+        limit_max_requests=2000, # Tăng từ 1000 → 2000
+        workers=1,               # Single worker cho development
+        backlog=50               # Tăng queue size
     )

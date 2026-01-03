@@ -151,17 +151,17 @@ void setup() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
 
-  // Cấu hình frame size dựa trên PSRAM
+  // Cấu hình frame size dựa trên PSRAM - TĂNG TỐC
   if(psramFound()){
-    config.frame_size = FRAMESIZE_VGA;  // 640x480
-    config.jpeg_quality = 10;           // 0-63, thấp hơn = chất lượng cao hơn
+    config.frame_size = FRAMESIZE_CIF;  // 400x296 (tối ưu: nhỏ hơn nhưng đủ cho face recognition)
+    config.jpeg_quality = 12;           // 0-63, tăng lên 12 để giảm dung lượng
     config.fb_count = 2;
-    Serial.println("PSRAM found - Using VGA resolution");
+    Serial.println("PSRAM found - Using CIF resolution (optimized)");
   } else {
-    config.frame_size = FRAMESIZE_SVGA; // 800x600
-    config.jpeg_quality = 12;
+    config.frame_size = FRAMESIZE_CIF;  // 400x296 (an toàn cho cả không PSRAM)
+    config.jpeg_quality = 15;
     config.fb_count = 1;
-    Serial.println("No PSRAM - Using SVGA resolution");
+    Serial.println("No PSRAM - Using CIF resolution (optimized)");
   }
 
   // Khởi tạo camera
@@ -248,7 +248,7 @@ void loop() {
   }
   
   // ESP-NOW callback xử lý trigger, không cần polling
-  delay(10); // Giảm CPU usage
+  delay(5);  // Giảm CPU usage (tối ưu: 10ms → 5ms)
 }
 
 // ============================================================
@@ -297,7 +297,7 @@ void captureAndUpload() {
     
     // Bật flash
     digitalWrite(FLASH_LED_PIN, HIGH);
-    delay(200); // Chờ flash ổn định
+    delay(100); // Chờ flash ổn định (tối ưu: giảm từ 200ms xuống 100ms)
     
     // Chụp lại
     fb = esp_camera_fb_get();
@@ -343,10 +343,10 @@ void captureAndUpload() {
     // Body
     client.print(head);
     
-    // Gửi image data theo chunks
+    // Gửi image data theo chunks (TĂNG TỐC)
     uint8_t *fbBuf = fb->buf;
     size_t fbLen = fb->len;
-    size_t chunkSize = 1024;
+    size_t chunkSize = 2048;  // Tăng từ 1024 → 2048 bytes (upload nhanh hơn)
     
     for (size_t i = 0; i < fbLen; i += chunkSize) {
       size_t toSend = (fbLen - i < chunkSize) ? (fbLen - i) : chunkSize;
@@ -360,13 +360,13 @@ void captureAndUpload() {
     
     client.print(tail);
     
-    // Đọc response từ server
+    // Đọc response từ server (TĂNG TỐC)
     Serial.println("Waiting for server response...");
     unsigned long timeout = millis();
     bool headersPassed = false;
     String response = "";
     
-    while (client.connected() && millis() - timeout < 10000) {
+    while (client.connected() && millis() - timeout < 8000) {  // Giảm từ 10s → 8s
       if (client.available()) {
         String line = client.readStringUntil('\n');
         

@@ -58,15 +58,15 @@ unsigned long stateStartTime = 0;
 unsigned long lastTriggerTime = 0;
 bool espNowReady = false;
 
-// Radar debounce
+// Radar debounce (TĂNG TỐC)
 bool lastRadarState = LOW;
 unsigned long lastRadarChangeTime = 0;
-const unsigned long RADAR_DEBOUNCE = 500; // 500ms debounce cho radar
+const unsigned long RADAR_DEBOUNCE = 300; // 300ms debounce (giảm từ 500ms)
 
-// Timing constants
-const unsigned long TRIGGER_COOLDOWN = 3000;     // 3s cooldown sau mỗi lần xử lý
-const unsigned long RESULT_DISPLAY_TIME = 4000;  // 4s hiển thị kết quả
-const unsigned long PROCESSING_TIMEOUT = 20000;  // 20s timeout cho xử lý
+// Timing constants (TỐI ƯU CHO UX)
+const unsigned long TRIGGER_COOLDOWN = 3000;     // 3s cooldown (đủ để người đi ra)
+const unsigned long RESULT_DISPLAY_TIME = 5000;  // 5s hiển thị kết quả (ĐỦ ĐỂ NHÌN RÕ)
+const unsigned long PROCESSING_TIMEOUT = 15000;  // 15s timeout
 
 // ============================================================
 // ESP-NOW Callback: Nhận kết quả từ ESP32-CAM
@@ -263,38 +263,44 @@ bool parseResult(String payload, String &message) {
 void displayResult(String message) {
   lcd.clear();
   
-  // Kiểm tra nếu là lỗi hệ thống thì không hiển thị "KET QUA:"
+  // Kiểm tra các trường hợp đặc biệt
   String lowerMsg = message;
   lowerMsg.toLowerCase();
   
-  if (lowerMsg.indexOf("chua bat dau") >= 0 || 
-      lowerMsg.indexOf("ko phat hien") >= 0) {
-    // Các trường hợp đặc biệt - không hiển thị "KET QUA:"
+  // 1. CHƯA BẬT SESSION
+  if (lowerMsg.indexOf("chua bat dau") >= 0) {
     lcd.setCursor(0, 0);
-    lcd.print(" KHONG THANH  ");
+    lcd.print(" CHUA BAT DAU! ");
     lcd.setCursor(0, 1);
-    lcd.print("     CONG     ");
+    lcd.print("  BAT SESSION  ");
+    playErrorSound();
+  }
+  // 2. KHÔNG PHÁT HIỆN KHUÔN MẶT
+  else if (lowerMsg.indexOf("ko phat hien") >= 0) {
+    lcd.setCursor(0, 0);
+    lcd.print(" KHONG PHAT  ");
+    lcd.setCursor(0, 1);
+    lcd.print(" HIEN KHUON MAT");
     playFailSound();
-  } 
+  }
+  // 3. GIẢ MẠO / FAKE
   else if (message.indexOf("GIA MAO") >= 0 || message.indexOf("FAKE") >= 0) {
-    // Phát hiện giả mạo
     lcd.setCursor(0, 0);
     lcd.print("   CANH BAO!  ");
     lcd.setCursor(0, 1);
     lcd.print("   GIA MAO!   ");
     playFailSound();
   }
-  else if (lowerMsg.indexOf("khong nhan ra") >= 0 || 
-           lowerMsg.indexOf("khong") >= 0) {
-    // Không nhận ra
+  // 4. KHÔNG NHẬN RA
+  else if (lowerMsg.indexOf("khong nhan ra") >= 0 || lowerMsg.indexOf("khong") >= 0) {
     lcd.setCursor(0, 0);
     lcd.print(" KHONG NHAN RA");
     lcd.setCursor(0, 1);
     lcd.print("  NGUOI NAY   ");
     playFailSound();
   }
+  // 5. THÀNH CÔNG - Hiển thị tên
   else {
-    // Thành công - hiển thị tên
     lcd.setCursor(0, 0);
     lcd.print("  CHAO MUNG! ");
     lcd.setCursor(0, 1);
@@ -338,16 +344,19 @@ void loop() {
     case IDLE: {
       // Hiển thị sẵn sàng
       static unsigned long lastUpdate = 0;
-      if (now - lastUpdate > 2000) {
+      static bool displayedIdle = false;
+      
+      if (!displayedIdle || now - lastUpdate > 2000) {
         lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print(" SAN SANG DIEM ");
         lcd.setCursor(0, 1);
         lcd.print("     DANH      ");
         lastUpdate = now;
+        displayedIdle = true;
       }
       
-      // Phát hiện chuyển động (sau khi radar ổn định)
+      // Phát hiện chuyển động (CHỈ khi ở IDLE và đã qua cooldown)
       if (currentRadarState == HIGH && radarStable) {
         // Kiểm tra cooldown
         if (now - lastTriggerTime < TRIGGER_COOLDOWN) {
@@ -355,15 +364,17 @@ void loop() {
           unsigned long remaining = (TRIGGER_COOLDOWN - (now - lastTriggerTime)) / 1000;
           lcd.clear();
           lcd.setCursor(0, 0);
-          lcd.print("VUI LONG DOI");
+          lcd.print(" VUI LONG CHO ");
           lcd.setCursor(0, 1);
-          lcd.print("Con ");
+          lcd.print("  Con ");
           lcd.print(remaining);
-          lcd.print(" giay...");
+          lcd.print(" giay  ");
+          displayedIdle = false;  // Cần refresh lại
         } else {
           // Chuyển sang state DETECTING
           currentState = DETECTING;
           stateStartTime = now;
+          displayedIdle = false;  // Reset flag
           Serial.println("=== STATE: DETECTING ===");
         }
       }
@@ -396,30 +407,34 @@ void loop() {
           displayed = false; // Reset flag
           Serial.println("=== STATE: PROCESSING ===");
         } else {
+          // ESP-NOW SEND FAILED - Camera không phản hồi
           Serial.print("ESP-NOW: Send failed! Error: ");
           Serial.println(result);
           lcd.clear();
           lcd.setCursor(0, 0);
-          lcd.print("   LOI MANG!   ");
+          lcd.print("  LOI CAMERA!  ");
           lcd.setCursor(0, 1);
-          lcd.print("  THU LAI...   ");
+          lcd.print(" KET NOI THAT BAI");
           playErrorSound();
-          delay(3000);
-          currentState = IDLE;
-          displayed = false; // Reset flag
-          Serial.println("=== STATE: IDLE (ESP-NOW error) ===");
+          delay(2000);
+          currentState = COOLDOWN;  // Cooldown thay vì IDLE
+          stateStartTime = now;
+          displayed = false;
+          Serial.println("=== STATE: COOLDOWN (Camera connection failed) ===");
         }
       } else {
+        // ESP-NOW NOT READY - Peer chưa được thêm
         lcd.clear();
         lcd.setCursor(0, 0);
-        lcd.print("   LOI MANG!   ");
+        lcd.print(" KHONG TIM THAY");
         lcd.setCursor(0, 1);
-        lcd.print("  THU LAI...   ");
+        lcd.print("    CAMERA!    ");
         playErrorSound();
-        delay(3000);
-        currentState = IDLE;
-        displayed = false; // Reset flag
-        Serial.println("=== STATE: IDLE (ESP-NOW not ready) ===");
+        delay(2000);
+        currentState = COOLDOWN;
+        stateStartTime = now;
+        displayed = false;
+        Serial.println("=== STATE: COOLDOWN (ESP-NOW not ready) ===");
       }
       break;
     }
@@ -427,9 +442,9 @@ void loop() {
     case PROCESSING: {
       // KHÔNG CẬP NHẬT LCD - giữ nguyên "DANG NHAN DIEN..."
       
-      // Polling kết quả từ server
+      // Polling kết quả từ server (TĂNG TỐC)
       static unsigned long lastCheck = 0;
-      if (now - lastCheck > 500) {
+      if (now - lastCheck > 300) {  // Giảm từ 500ms → 300ms (check nhanh hơn)
         lastCheck = now;
         
         if (WiFi.status() != WL_CONNECTED) {
@@ -440,7 +455,7 @@ void loop() {
           lcd.setCursor(0, 1);
           lcd.print("  THU LAI...   ");
           playErrorSound();
-          delay(2000);
+          delay(1500);  // Giảm từ 2s → 1.5s
           currentState = COOLDOWN;
           stateStartTime = now;
           Serial.println("=== STATE: COOLDOWN (WiFi error) ===");
@@ -449,7 +464,7 @@ void loop() {
         
         HTTPClient http;
         http.begin(serverUrlResult);
-        http.setTimeout(3000);
+        http.setTimeout(2000);  // Giảm timeout từ 3s → 2s
         
         int httpResponseCode = http.GET();
         
@@ -494,11 +509,11 @@ void loop() {
       if (now - stateStartTime > PROCESSING_TIMEOUT) {
         lcd.clear();
         lcd.setCursor(0, 0);
-        lcd.print("  QUA LAU ROI! ");
+          lcd.print("  QUA LAU ROI! ");
         lcd.setCursor(0, 1);
         lcd.print("  THU LAI...   ");
         playErrorSound();
-        delay(2000);
+        delay(1500);  // Giảm từ 2s → 1.5s
         currentState = COOLDOWN;
         stateStartTime = now;
         Serial.println("=== STATE: COOLDOWN (timeout) ===");
@@ -507,7 +522,12 @@ void loop() {
     }
     
     case SHOWING_RESULT: {
-      // Hiển thị kết quả trong RESULT_DISPLAY_TIME
+      // HIỂN THỊ KẾT QUẢ - KHÔNG CHO TRIGGER MỚI
+      // Người vừa điểm danh cần thấy rõ kết quả của mình!
+      
+      // Bỏ qua radar trong state này
+      // (Radar sẽ chỉ được xử lý ở IDLE)
+      
       if (now - stateStartTime > RESULT_DISPLAY_TIME) {
         currentState = COOLDOWN;
         stateStartTime = now;
@@ -517,15 +537,33 @@ void loop() {
     }
     
     case COOLDOWN: {
-      // Quay về màn hình "SAN SANG" ngay lập tức
+      // COOLDOWN - CHO NGƯỜI ĐI RA, KHÔNG CHO TRIGGER MỚI
       static bool displayedCooldown = false;
-      if (!displayedCooldown) {
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print(" SAN SANG DIEM ");
-        lcd.setCursor(0, 1);
-        lcd.print("     DANH      ");
-        displayedCooldown = true;
+      
+      // Hiển thị thông báo chờ nếu có người đứng trước radar
+      if (currentRadarState == HIGH && radarStable) {
+        // Có người đang đứng - hiển thị countdown
+        unsigned long remaining = (TRIGGER_COOLDOWN - (now - stateStartTime)) / 1000 + 1;
+        if (remaining > 0) {
+          lcd.clear();
+          lcd.setCursor(0, 0);
+          lcd.print(" VUI LONG CHO ");
+          lcd.setCursor(0, 1);
+          lcd.print("  Con ");
+          lcd.print(remaining);
+          lcd.print(" giay  ");
+          displayedCooldown = false;  // Cần refresh lại khi hết cooldown
+        }
+      } else {
+        // Không có người - hiển thị sẵn sàng
+        if (!displayedCooldown) {
+          lcd.clear();
+          lcd.setCursor(0, 0);
+          lcd.print(" SAN SANG DIEM ");
+          lcd.setCursor(0, 1);
+          lcd.print("     DANH      ");
+          displayedCooldown = true;
+        }
       }
       
       if (now - stateStartTime > TRIGGER_COOLDOWN) {
@@ -541,5 +579,5 @@ void loop() {
   // ĐẢM BẢO BUZZER LUÔN TẮT SAU MỖI VÒNG LOOP
   digitalWrite(SPEAKER_PIN, LOW);
   
-  delay(50);
+  delay(20);  // Giảm từ 50ms → 20ms (tăng tốc độ phản hồi)
 }
