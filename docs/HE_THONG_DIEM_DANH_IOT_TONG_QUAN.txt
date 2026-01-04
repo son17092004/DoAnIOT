@@ -1,0 +1,1178 @@
+================================================================================
+                    HỆ THỐNG ĐIỂM DANH IOT NHẬN DIỆN KHUÔN MẶT
+                          TỔNG QUAN KIẾN TRÚC & LOGIC
+================================================================================
+
+Phiên bản: 2.0 (Professional)
+Ngày cập nhật: 04/01/2026
+
+================================================================================
+                            1. KIẾN TRÚC TỔNG QUAN
+================================================================================
+
+Hệ thống gồm 3 thành phần chính:
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          KIẾN TRÚC HỆ THỐNG                             │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  [ESP32-CAM]  ◄──── ESP-NOW ────►  [ESP32-LCD + Radar + Buzzer]        │
+│       │                                      │                           │
+│       │                                      │                           │
+│       ├──── HTTP Upload ────┐                │                          │
+│       │                     ▼                ▼                           │
+│       │              ┌────────────────────────────┐                      │
+│       │              │   BACKEND SERVER (FastAPI) │                      │
+│       │              │   - Face Recognition       │                      │
+│       └─────────────►│   - Anti-Spoofing         │                      │
+│                      │   - MongoDB Database       │                      │
+│                      │   - REST API               │                      │
+│                      └────────────┬───────────────┘                      │
+│                                   │                                      │
+│                                   ▼                                      │
+│                      ┌────────────────────────────┐                      │
+│                      │   WEB UI (Frontend)        │                      │
+│                      │   - Quản lý sinh viên      │                      │
+│                      │   - Quản lý lớp học        │                      │
+│                      │   - Điểm danh real-time    │                      │
+│                      │   - Báo cáo thống kê       │                      │
+│                      └────────────────────────────┘                      │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Giao thức:
+- ESP32 ↔ ESP32: ESP-NOW (peer-to-peer, low latency)
+- ESP32 → Server: HTTP/HTTPS (WiFi)
+- Web UI ↔ Server: REST API (JSON)
+
+
+================================================================================
+                        2. THÀNH PHẦN ESP32-CAM
+================================================================================
+
+Chức năng:
+----------
+- Nhận trigger từ ESP32-LCD qua ESP-NOW
+- Chụp ảnh khuôn mặt (CIF resolution 352x288)
+- Tự động bật flash LED nếu tối
+- Upload ảnh lên server qua HTTP POST multipart/form-data
+- Gửi kết quả về ESP32-LCD
+
+Hardware:
+---------
+- ESP32-CAM (AI-Thinker)
+- Camera OV2640
+- Flash LED GPIO 4
+- PSRAM (tùy chọn, để tăng performance)
+
+State Machine:
+--------------
+IDLE → Nhận ESP-NOW trigger → CAPTURING → Chụp ảnh → UPLOADING → WAITING → IDLE
+
+Logic xử lý:
+------------
+
+1. KHỞI TẠO (setup):
+   - Khởi tạo Serial (115200 baud)
+   - Kết nối WiFi
+   - Cấu hình camera:
+     * Resolution: FRAMESIZE_CIF (352x288)
+     * JPEG Quality: 15 (PSRAM) hoặc 18 (no PSRAM)
+     * Frame buffer: 2 (PSRAM) hoặc 1 (no PSRAM)
+   - Khởi tạo ESP-NOW
+   - Đăng ký callback nhận trigger
+   - Cấu hình Flash LED (GPIO 4, OUTPUT, LOW)
+
+2. NHẬN TRIGGER (onDataRecv callback):
+   - Nhận ESP-NOW message từ ESP32-LCD
+   - Parse data: "TRIGGER_CAPTURE"
+   - Set flag triggerPending = true
+
+3. CHỤP ẢNH (captureAndUpload):
+   a) Kiểm tra độ sáng:
+      - Tính average brightness của frame
+      - Nếu < 100 → Bật flash LED
+   
+   b) Chụp ảnh:
+      - esp_camera_fb_get() → Lấy frame buffer
+      - Kiểm tra kích thước ảnh
+      - Chụp thành công → Lưu vào buffer
+   
+   c) Upload lên server:
+      - HTTPClient POST đến http://SERVER_IP:8080/api/recognize
+      - Content-Type: multipart/form-data
+      - Boundary: ----WebKitFormBoundary7MA4YWxkTrZu0gW
+      - Gửi từng chunk 2048 bytes
+      - Timeout: 8000ms
+   
+   d) Nhận response:
+      - Đọc HTTP status code
+      - Parse JSON response body
+      - Extract message (tên sinh viên hoặc lỗi)
+   
+   e) Cleanup:
+      - Tắt flash LED
+      - Release frame buffer
+      - Cooldown 5 giây trước khi trigger tiếp
+
+4. LOOP:
+   - Kiểm tra triggerPending
+   - Nếu true → captureAndUpload()
+   - delay(5ms)
+
+
+================================================================================
+                        3. THÀNH PHẦN ESP32-LCD
+================================================================================
+
+Chức năng:
+----------
+- Phát hiện chuyển động qua radar sensor
+- Gửi trigger đến ESP32-CAM qua ESP-NOW
+- Polling kết quả từ server qua HTTP GET
+- Hiển thị kết quả lên LCD 16x2
+- Phát âm thanh qua buzzer (Active Buzzer)
+
+Hardware:
+---------
+- ESP32 DevKit
+- LCD 16x2 I2C (địa chỉ 0x27)
+- Radar sensor RCWL-0516 (GPIO 32)
+- Active Buzzer (GPIO 13)
+
+State Machine:
+--------------
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                         STATE MACHINE                               │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│   ┌────────┐   Radar HIGH    ┌───────────┐   ESP-NOW sent         │
+│   │  IDLE  │ ───────────────► │ DETECTING │ ─────────────────┐     │
+│   └───▲────┘                  └───────────┘                  │     │
+│       │                                                       │     │
+│       │                                                       ▼     │
+│       │                       ┌───────────────┐         ┌──────────┴───┐
+│       │                       │ SHOWING_RESULT│ ◄────── │  PROCESSING  │
+│       │                       └───────┬───────┘         └──────────────┘
+│       │                               │                  (Polling /api)
+│       │                               │ 5s                              │
+│       │                               ▼                                 │
+│       │                       ┌────────────┐                            │
+│       └───────────────────────┤  COOLDOWN  │                            │
+│                    3s         └────────────┘                            │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Thời gian:
+- RESULT_DISPLAY_TIME: 5000ms (hiển thị kết quả)
+- TRIGGER_COOLDOWN: 2000ms (cooldown giữa các lần trigger)
+- PROCESSING_TIMEOUT: 15000ms (timeout chờ server)
+- RADAR_DEBOUNCE: 300ms (debounce radar)
+
+Logic xử lý chi tiết:
+---------------------
+
+1. KHỞI TẠO (setup):
+   - Serial: 115200 baud
+   - WiFi: Kết nối với SSID/Password
+   - ESP-NOW: Khởi tạo, thêm peer ESP32-CAM MAC
+   - LCD: Khởi tạo I2C, backlight ON
+   - Radar: GPIO 32 INPUT
+   - Buzzer: GPIO 13 OUTPUT, LOW (tắt)
+
+2. STATE: IDLE
+   - Hiển thị LCD (chỉ 1 lần):
+     * " SAN SANG  "
+     * " DIEM DANH "
+   
+   - Kiểm tra radar:
+     * Đọc GPIO 32
+     * Debounce 300ms
+     * Nếu HIGH và ổn định:
+       - Kiểm tra cooldown (lastTriggerTime + 2000ms)
+       - Nếu còn trong cooldown:
+         └─ Hiển thị "VUI LONG CHO" + số giây
+       - Nếu hết cooldown:
+         └─ Chuyển sang DETECTING
+
+3. STATE: DETECTING
+   - Hiển thị LCD (chỉ 1 lần):
+     * " DANG NHAN DIEN..."
+     * "  Vui long doi  "
+   
+   - Gửi ESP-NOW trigger:
+     * Message: "TRIGGER_CAPTURE"
+     * esp_now_send() đến ESP32-CAM MAC
+     * Kiểm tra kết quả:
+       - Thành công → Chuyển PROCESSING
+       - Thất bại → Hiển thị "LOI CAMERA! KET NOI THAT BAI"
+       - ESP-NOW không sẵn sàng → "KHONG TIM THAY CAMERA!"
+
+4. STATE: PROCESSING
+   - Polling server mỗi 300ms:
+     * HTTP GET http://SERVER_IP:8080/api/result/latest
+     * Timeout: 2000ms
+   
+   - Parse JSON response:
+     {
+       "timestamp": 1234567890.123,
+       "message": "Nguyen Van A" / "Ko phat hien" / "GIA MAO" / ...
+     }
+   
+   - Kiểm tra timestamp:
+     * Nếu timestamp > stateStartTime → Kết quả mới
+       └─ Lưu message, chuyển SHOWING_RESULT
+     * Nếu timeout > 15s → Hiển thị lỗi, quay IDLE
+
+5. STATE: SHOWING_RESULT
+   - Hiển thị LCD 5 giây (chỉ 1 lần):
+     * displayResult(message) → Phân tích message:
+     
+     Case 1: "Chua bat dau"
+       LCD: " CHUA BAT DAU! "
+            "  BAT SESSION  "
+       Sound: playErrorSound() (3 beeps)
+     
+     Case 2: "Ko phat hien"
+       LCD: " KHONG PHAT  "
+            " HIEN KHUON MAT"
+       Sound: playFailSound() (1 beep dài)
+     
+     Case 3: "GIA MAO"
+       LCD: "   CANH BAO!   "
+            "   GIA MAO!    "
+       Sound: playFailSound() (1 beep dài)
+     
+     Case 4: "[Tên sinh viên]"
+       LCD: "  CHAO MUNG!   "
+            "  [Tên SV]     "
+       Sound: playSuccessSound() (2 beeps vui)
+     
+     Case 5: Lỗi khác
+       LCD: " KHONG NHAN RA "
+       Sound: playFailSound()
+   
+   - Sau 5 giây → Chuyển COOLDOWN
+   - KHÔNG cho phép trigger mới trong 5s này
+
+6. STATE: COOLDOWN
+   - Hiển thị LCD (chỉ 1 lần):
+     * " VUI LONG CHO "
+     * "   Con Xs      " (X = số giây còn lại)
+   
+   - Chờ 2 giây
+   - Sau 2s → Chuyển IDLE
+   - KHÔNG cho phép trigger mới trong 2s này
+
+7. BUZZER CONTROL:
+   - Active Buzzer (chỉ cần HIGH/LOW, không cần PWM)
+   - playBeep(duration):
+     * digitalWrite(SPEAKER_PIN, HIGH)
+     * delay(duration)
+     * digitalWrite(SPEAKER_PIN, LOW)
+   
+   - playSuccessSound(): 2 beeps ngắn (200ms mỗi cái)
+   - playFailSound(): 1 beep dài (500ms)
+   - playErrorSound(): 3 beeps ngắn (150ms mỗi cái)
+   
+   - Đảm bảo LOW khi không dùng (tránh kêu liên tục)
+
+
+================================================================================
+                        4. BACKEND SERVER (FastAPI)
+================================================================================
+
+Công nghệ:
+----------
+- Framework: FastAPI (Python)
+- Web server: Uvicorn (ASGI)
+- Database: MongoDB
+- Face Recognition: face_recognition library (dlib + HOG/CNN)
+- Anti-Spoofing: PyTorch + MobileNetV2 (optional)
+- Image Processing: OpenCV, PIL
+
+Cấu trúc thư mục:
+-----------------
+backend/
+├── main.py              # FastAPI app, API endpoints
+├── database.py          # MongoDB operations
+├── face_utils.py        # Face detection, recognition, anti-spoofing
+├── static/
+│   └── index.html       # Web UI
+└── temp_images/         # Temporary uploaded images (auto cleanup)
+
+Database Schema (MongoDB):
+--------------------------
+
+1. students (Sinh viên)
+{
+  "_id": ObjectId,
+  "name": "Nguyễn Văn A",
+  "student_id": "B2012345",        // UNIQUE INDEX
+  "email": "student@example.com",
+  "phone": "0123456789",
+  "embeddings": [                  // Danh sách embeddings (3-5 ảnh)
+    [0.123, 0.456, ..., 0.789],   // 128 dimensions
+    [0.321, 0.654, ..., 0.987],
+    ...
+  ],
+  "created_at": ISODate("2026-01-04T..."),
+  "updated_at": ISODate("2026-01-04T...")
+}
+
+2. classes (Lớp học)
+{
+  "_id": ObjectId,
+  "class_name": "Lập trình IoT",
+  "class_code": "IOT2024",         // UNIQUE INDEX
+  "teacher": "TS. Nguyễn Văn B",
+  "description": "Môn học về IoT",
+  "created_at": ISODate("2026-01-04T...")
+}
+
+3. class_members (Sinh viên trong lớp)
+{
+  "_id": ObjectId,
+  "class_id": ObjectId("..."),     // Reference to classes
+  "student_id": "B2012345",        // Reference to students
+  "added_at": ISODate("2026-01-04T...")
+}
+UNIQUE INDEX: (class_id, student_id) - Tránh trùng lặp
+
+4. sessions (Phiên điểm danh)
+{
+  "_id": ObjectId,
+  "class_id": ObjectId("..."),
+  "session_name": "Buổi 1 - Ngày 04/01/2026",
+  "created_at": ISODate("2026-01-04T..."),
+  "status": "active" | "ended",
+  "ended_at": ISODate("2026-01-04T...")  // Nếu status = ended
+}
+INDEX: (class_id, created_at)
+
+5. attendances (Điểm danh)
+{
+  "_id": ObjectId,
+  "session_id": ObjectId("..."),
+  "student_id": "B2012345",
+  "image_url": null,               // Optional
+  "timestamp": ISODate("2026-01-04T...")
+}
+UNIQUE INDEX: (session_id, student_id) - Chỉ điểm danh 1 lần/phiên
+
+
+LOGIC XỬ LÝ CHÍNH:
+------------------
+
+A. NHẬN DIỆN KHUÔN MẶT (POST /api/recognize)
+--------------------------------------------
+
+Input: Ảnh từ ESP32-CAM (multipart/form-data)
+
+Bước 1: Kiểm tra session
+  - Nếu CURRENT_SESSION_ID is None:
+    └─ Return {"status": "error", "message": "Chua bat dau"}
+
+Bước 2: Đọc ảnh
+  - Lưu vào temp_images/ với timestamp filename
+  - Đọc file bằng cv2.imread()
+  - Kiểm tra image is None → Return lỗi
+
+Bước 3: Phát hiện khuôn mặt
+  - face_recognition.face_locations(rgb_image)
+  - Nếu không tìm thấy face:
+    └─ Return {"status": "failed", "message": "No face detected"}
+
+Bước 4: Anti-Spoofing (Optional, nếu ANTISPOOF_MODEL loaded)
+  - check_liveness(face_img, model, face_location)
+    └─ Returns: (is_real, confidence)
+  
+  - Preprocessing:
+    * Crop face với padding 20%
+    * Resize to 224x224
+    * Normalize: mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+    * ToTensor
+  
+  - Inference:
+    * MobileNetV2 forward pass
+    * Softmax → probabilities
+    * real_score = prob[class=1]
+  
+  - Nếu is_real == False (confidence < threshold=0.5):
+    └─ Return {"status": "failed", "message": "GIA MAO"}
+
+Bước 5: Alignment & Embedding
+  - get_face_landmarks(image)
+  - align_face(image, landmarks) → Xoay ảnh dựa trên eye coordinates
+  - get_face_embedding(aligned_image) → 128D vector
+
+Bước 6: So sánh với database
+  - Lấy tất cả students từ DB (với embeddings)
+  - Flatten tất cả embeddings:
+    known_embeddings = []
+    student_map = {}  # Map embedding_index → student_info
+    
+    for student in students:
+        for emb in student['embeddings']:
+            known_embeddings.append(emb)
+            student_map[len(known_embeddings)-1] = student
+  
+  - face_recognition.face_distance(known_embeddings, input_embedding)
+    └─ Tính Euclidean distance
+  
+  - Tìm min_distance:
+    * Nếu min_distance < threshold (0.5) → Matched!
+    * Nếu min_distance >= 0.5 → No match
+
+Bước 7: Kiểm tra sinh viên thuộc lớp
+  - Query class_members:
+    * WHERE class_id = session.class_id
+    * AND student_id = matched_student_id
+  
+  - Nếu không tìm thấy:
+    └─ Return {"status": "failed", "message": "[Tên] khong thuoc lop nay"}
+
+Bước 8: Điểm danh
+  - Check duplicate:
+    * Query attendances WHERE session_id = X AND student_id = Y
+    * Nếu đã tồn tại:
+      └─ Return {"status": "success", "message": "[Tên] (Da diem danh)", "new_attendance": false}
+  
+  - Nếu chưa điểm danh:
+    * Insert vào attendances collection
+    * Return {"status": "success", "message": "[Tên]", "new_attendance": true}
+
+Bước 9: Lưu kết quả (cho ESP32-LCD polling)
+  - LAST_RECOGNITION_RESULT (global dict):
+    {
+      "timestamp": time.time(),
+      "message": "[Tên sinh viên]" hoặc "Ko phat hien" hoặc "GIA MAO"
+    }
+  
+  - ESP32-LCD sẽ poll GET /api/result/latest để lấy message này
+
+
+B. QUẢN LÝ SINH VIÊN
+---------------------
+
+1. Tạo sinh viên (POST /api/students/create)
+   Input: {"name": "...", "student_id": "...", "email": "...", "phone": "..."}
+   Output: {"_id": "...", "name": "...", ...}
+   
+   Logic:
+   - Check student_id unique (MongoDB unique index)
+   - Insert vào students collection với embeddings = []
+
+2. Thêm ảnh (POST /api/students/{student_id}/add-photo)
+   Input: multipart/form-data với file ảnh
+   
+   Logic:
+   - Đọc ảnh → detect_face() → get_face_embedding()
+   - $push embedding vào students.embeddings array
+   - Khuyến nghị: 3-5 ảnh với góc độ khác nhau
+
+3. Lấy danh sách (GET /api/students)
+   Output: [{"_id", "name", "student_id", "embedding_count": len(embeddings)}, ...]
+
+4. Chi tiết (GET /api/students/{student_id})
+   Output: Full student document (không trả embeddings để tiết kiệm bandwidth)
+
+5. Xóa (DELETE /api/students/{student_id})
+   Logic:
+   - Xóa student document
+   - Xóa tất cả class_members của student này
+   - Xóa tất cả attendances của student này
+
+
+C. QUẢN LÝ LỚP HỌC
+-------------------
+
+1. Tạo lớp (POST /api/classes/create)
+   Input: {"class_name": "...", "class_code": "...", "teacher": "...", "description": "..."}
+   Output: {"_id": "...", ...}
+
+2. Thêm sinh viên vào lớp (POST /api/classes/{class_id}/students/{student_id})
+   Logic:
+   - Check class tồn tại
+   - Check student tồn tại
+   - Insert vào class_members (unique index tự động tránh duplicate)
+
+3. Xóa sinh viên khỏi lớp (DELETE /api/classes/{class_id}/students/{student_id})
+   Logic: Delete from class_members
+
+4. Lấy danh sách sinh viên trong lớp (GET /api/classes/{class_id}/students)
+   Logic:
+   - Query class_members WHERE class_id = X
+   - Join với students collection để lấy thông tin đầy đủ
+
+5. Lấy danh sách lớp (GET /api/classes)
+   Output: [{"_id", "class_name", "class_code", "student_count"}, ...]
+
+
+D. QUẢN LÝ ĐIỂM DANH
+---------------------
+
+1. Bắt đầu session (POST /api/sessions/start)
+   Input: {"class_id": "...", "session_name": "Buổi 1 - ..."}
+   
+   Logic:
+   - Check CURRENT_SESSION_ID is None (chỉ cho phép 1 session active)
+   - Insert vào sessions với status = "active"
+   - Set CURRENT_SESSION_ID = new_session_id (global variable)
+
+2. Kết thúc session (POST /api/sessions/{session_id}/end)
+   Logic:
+   - Update sessions: status = "ended", ended_at = now
+   - Set CURRENT_SESSION_ID = None
+
+3. Lấy session hiện tại (GET /api/sessions/current)
+   Logic: Return session document từ CURRENT_SESSION_ID
+
+4. Lịch sử sessions của lớp (GET /api/classes/{class_id}/sessions)
+   Logic: Query sessions WHERE class_id = X ORDER BY created_at DESC
+
+5. Danh sách đã điểm danh (GET /api/sessions/{session_id}/attendances)
+   Logic:
+   - Query attendances WHERE session_id = X
+   - Join với students để lấy name
+
+6. Báo cáo chi tiết (GET /api/sessions/{session_id}/report)
+   Logic:
+   - Lấy danh sách tất cả sinh viên trong lớp (from class_members)
+   - Lấy danh sách đã điểm danh (from attendances)
+   - So sánh:
+     * present: Sinh viên có trong attendances
+     * absent: Sinh viên trong lớp NHƯNG không có trong attendances
+   - Tính phần trăm: (present / total) * 100
+
+
+E. UVICORN SERVER CONFIG
+-------------------------
+host: 0.0.0.0 (listen on all interfaces)
+port: 8080
+workers: 2 (multi-process)
+timeout_keep_alive: 20s
+limit_concurrency: 20
+limit_max_requests: 2000 (restart worker sau 2000 requests để clear memory)
+backlog: 50 (queue cho pending connections)
+
+
+================================================================================
+                        5. WEB UI (FRONTEND)
+================================================================================
+
+Công nghệ:
+----------
+- Pure HTML/CSS/JavaScript (Vanilla JS, không dùng framework)
+- Bootstrap-inspired styling (nhưng tự viết)
+- Fetch API cho HTTP requests
+- Real-time polling mỗi 2 giây
+
+Cấu trúc:
+---------
+- Single Page Application (SPA)
+- 4 tabs chính:
+  1. Sinh viên (Student Management)
+  2. Lớp học (Class Management)
+  3. Điểm danh (Attendance)
+  4. Báo cáo (Reports)
+
+LOGIC CÁC CHỨC NĂNG:
+---------------------
+
+A. TAB SINH VIÊN
+-----------------
+
+1. Tạo sinh viên mới:
+   - Form input: name, student_id, email, phone
+   - Submit → POST /api/students/create
+   - Success → Refresh danh sách sinh viên
+
+2. Upload ảnh cho sinh viên:
+   - Dropdown chọn sinh viên
+   - Click vào khung "📷 Click để chọn ảnh"
+   - File input → Chọn ảnh
+   - Submit → POST /api/students/{student_id}/add-photo
+   - Success → Alert "Ảnh đã được thêm!" → Refresh danh sách
+
+3. Hiển thị danh sách sinh viên:
+   - GET /api/students
+   - Render bảng với columns:
+     * STT
+     * Họ và tên
+     * Mã sinh viên
+     * Email
+     * Số ảnh (embeddings.length)
+     * Hành động (Xóa button)
+
+4. Xóa sinh viên:
+   - Confirm dialog
+   - DELETE /api/students/{student_id}
+   - Success → Refresh danh sách
+
+
+B. TAB LỚP HỌC
+--------------
+
+1. Tạo lớp học mới:
+   - Form input: class_name, class_code, teacher, description
+   - Submit → POST /api/classes/create
+   - Success → Refresh danh sách lớp
+
+2. Thêm sinh viên vào lớp:
+   - Dropdown 1: Chọn lớp học
+   - Dropdown 2: Chọn sinh viên (từ danh sách tất cả sinh viên)
+   - Submit → POST /api/classes/{class_id}/students/{student_id}
+   - Success → Alert "Đã thêm sinh viên vào lớp"
+
+3. Hiển thị danh sách lớp:
+   - GET /api/classes
+   - Render bảng với columns:
+     * STT
+     * Tên lớp
+     * Mã lớp
+     * Giảng viên
+     * Số sinh viên
+     * Hành động (Xem SV, Xóa lớp)
+
+4. Xem sinh viên trong lớp:
+   - Modal popup
+   - GET /api/classes/{class_id}/students
+   - Render danh sách sinh viên với button Xóa khỏi lớp
+
+5. Xóa sinh viên khỏi lớp:
+   - DELETE /api/classes/{class_id}/students/{student_id}
+   - Success → Refresh modal
+
+
+C. TAB ĐIỂM DANH
+----------------
+
+1. Bắt đầu điểm danh:
+   - Kiểm tra session hiện tại (GET /api/sessions/current)
+   - Nếu không có session active:
+     * Hiển thị form:
+       - Dropdown chọn lớp
+       - Input tên phiên (ví dụ: "Buổi 1 - Ngày 04/01/2026")
+     * Submit → POST /api/sessions/start
+     * Success → Chuyển trạng thái "Đang điểm danh"
+
+2. Trạng thái "Đang điểm danh":
+   - Hiển thị:
+     * Badge màu xanh "Đang điểm danh"
+     * Tên lớp, tên phiên
+     * Thời gian bắt đầu
+     * Số lượng đã điểm danh
+   
+   - Auto-refresh mỗi 2 giây:
+     * GET /api/sessions/{session_id}/attendances
+     * Render bảng danh sách đã điểm danh:
+       - STT
+       - Họ tên
+       - Mã sinh viên
+       - Thời gian điểm danh
+   
+   - Button "Kết thúc":
+     * Confirm dialog
+     * POST /api/sessions/{session_id}/end
+     * Success → Dừng auto-refresh, chuyển về trạng thái "Chưa bắt đầu"
+
+3. ESP32 tự động điểm danh:
+   - ESP32-CAM upload ảnh → Server nhận diện
+   - Server tự động insert vào attendances
+   - Web UI tự động cập nhật (nhờ polling mỗi 2s)
+
+
+D. TAB BÁO CÁO
+--------------
+
+1. Chọn lớp:
+   - Dropdown chọn lớp học
+   - GET /api/classes/{class_id}/sessions
+   - Hiển thị danh sách các phiên điểm danh đã kết thúc
+
+2. Xem báo cáo chi tiết:
+   - Click button "Xem báo cáo" của 1 session
+   - GET /api/sessions/{session_id}/report
+   - Modal popup hiển thị:
+     * Thông tin phiên (tên, thời gian)
+     * Thống kê:
+       - Tổng số sinh viên trong lớp: X
+       - Số có mặt: Y (Z%)
+       - Số vắng: W (V%)
+     * Bảng 1: Danh sách có mặt (tên, mã SV, thời gian điểm danh)
+     * Bảng 2: Danh sách vắng (tên, mã SV)
+
+
+================================================================================
+                        6. LUỒNG XỬ LÝ HOÀN CHỈNH
+================================================================================
+
+SCENARIO 1: ĐIỂM DANH THÀNH CÔNG
+---------------------------------
+
+1. Admin bật session điểm danh trên Web UI
+   → POST /api/sessions/start
+   → Server: CURRENT_SESSION_ID = new_session_id
+
+2. Sinh viên A đi qua radar
+   → ESP32-LCD: Radar GPIO 32 → HIGH
+   → Debounce 300ms → Chuyển state DETECTING
+
+3. ESP32-LCD gửi trigger
+   → esp_now_send("TRIGGER_CAPTURE") → ESP32-CAM
+   → ESP32-LCD chuyển state PROCESSING
+
+4. ESP32-CAM nhận trigger
+   → Chụp ảnh (CIF 352x288)
+   → Kiểm tra brightness → Bật flash nếu cần
+   → HTTP POST /api/recognize (multipart/form-data)
+
+5. Server nhận ảnh
+   → Detect face → face_locations
+   → (Optional) Check anti-spoofing → is_real = True
+   → Align face → Extract embedding (128D)
+   → Compare với database:
+     * Tìm thấy match: Sinh viên A (distance = 0.32 < 0.5)
+   → Kiểm tra Sinh viên A thuộc lớp đang điểm danh → OK
+   → Check duplicate trong attendances → Chưa điểm danh
+   → Insert attendances: {session_id, student_id, timestamp}
+   → LAST_RECOGNITION_RESULT = {timestamp, message: "Nguyen Van A"}
+   → Response: {"status": "success", "message": "Nguyen Van A"}
+
+6. ESP32-LCD polling
+   → GET /api/result/latest mỗi 300ms
+   → Nhận được: {timestamp: X, message: "Nguyen Van A"}
+   → Timestamp > stateStartTime → Kết quả mới!
+   → Chuyển state SHOWING_RESULT
+
+7. ESP32-LCD hiển thị
+   → LCD: "  CHAO MUNG!   "
+           "  Nguyen Van A"
+   → Buzzer: playSuccessSound() (2 beeps)
+   → Giữ màn hình 5 giây
+
+8. Web UI tự động cập nhật
+   → Polling mỗi 2s: GET /api/sessions/{session_id}/attendances
+   → Thêm dòng mới vào bảng: "Nguyen Van A | B2012345 | 08:30:15"
+   → Tăng counter "Số đã điểm danh: 1"
+
+9. ESP32-LCD kết thúc
+   → Sau 5s → Chuyển COOLDOWN (2s)
+   → Sau 2s → Chuyển IDLE
+   → Sẵn sàng cho sinh viên tiếp theo
+
+
+SCENARIO 2: KHÔNG PHÁT HIỆN KHUÔN MẶT
+--------------------------------------
+
+1-4. Giống Scenario 1
+
+5. Server nhận ảnh
+   → Detect face → face_locations = [] (EMPTY!)
+   → LAST_RECOGNITION_RESULT = {timestamp, message: "Ko phat hien"}
+   → Response: {"status": "failed", "message": "No face detected"}
+
+6. ESP32-LCD polling
+   → Nhận được: {timestamp: X, message: "Ko phat hien"}
+   → Chuyển SHOWING_RESULT
+
+7. ESP32-LCD hiển thị
+   → LCD: " KHONG PHAT  "
+           " HIEN KHUON MAT"
+   → Buzzer: playFailSound() (1 beep dài)
+   → Giữ 5 giây → COOLDOWN → IDLE
+
+Kết quả: KHÔNG điểm danh
+
+
+SCENARIO 3: GIẢ MẠO (ANTI-SPOOFING)
+------------------------------------
+
+1-4. Giống Scenario 1
+
+5. Server nhận ảnh
+   → Detect face → OK
+   → Check anti-spoofing:
+     * Crop face + padding 20%
+     * Resize 224x224
+     * Normalize → Tensor
+     * MobileNetV2 inference → Softmax
+     * real_score = 0.12 (< 0.5) → is_real = False
+   → LAST_RECOGNITION_RESULT = {timestamp, message: "GIA MAO"}
+   → Response: {"status": "failed", "message": "GIA MAO"}
+
+6. ESP32-LCD polling
+   → Nhận được: {timestamp: X, message: "GIA MAO"}
+   → Chuyển SHOWING_RESULT
+
+7. ESP32-LCD hiển thị
+   → LCD: "   CANH BAO!   "
+           "   GIA MAO!    "
+   → Buzzer: playFailSound() (1 beep dài)
+   → Giữ 5 giây → COOLDOWN → IDLE
+
+Kết quả: KHÔNG điểm danh, cảnh báo giả mạo
+
+
+SCENARIO 4: SINH VIÊN KHÔNG THUỘC LỚP
+--------------------------------------
+
+1-4. Giống Scenario 1
+
+5. Server nhận ảnh
+   → Detect face → OK
+   → Extract embedding → OK
+   → Compare database → Match: Sinh viên B
+   → Kiểm tra class_members:
+     * WHERE class_id = session.class_id AND student_id = "B2012345"
+     * Result: NOT FOUND (Sinh viên B không trong lớp)
+   → LAST_RECOGNITION_RESULT = {timestamp, message: "Nguyen Van B khong thuoc lop nay"}
+   → Response: {"status": "failed", "message": "Nguyen Van B khong thuoc lop nay"}
+
+6. ESP32-LCD polling
+   → Nhận được: {timestamp: X, message: "... khong thuoc lop nay"}
+   → Chuyển SHOWING_RESULT
+
+7. ESP32-LCD hiển thị
+   → LCD: " Ko thuoc lop "
+           " [Tên sinh viên]"
+   → Buzzer: playFailSound()
+   → Giữ 5 giây → COOLDOWN → IDLE
+
+Kết quả: KHÔNG điểm danh
+
+
+SCENARIO 5: ĐÃ ĐIỂM DANH RỒI (DUPLICATE)
+-----------------------------------------
+
+1-4. Giống Scenario 1
+
+5. Server nhận ảnh
+   → Detect face → OK
+   → Extract embedding → OK
+   → Match: Sinh viên A
+   → Kiểm tra class_members → OK (thuộc lớp)
+   → Check duplicate:
+     * Query attendances WHERE session_id = X AND student_id = "A"
+     * Result: FOUND (đã điểm danh lúc 08:30:15)
+   → LAST_RECOGNITION_RESULT = {timestamp, message: "Nguyen Van A (Da diem danh)"}
+   → Response: {"status": "success", "message": "Nguyen Van A (Da diem danh)", "new_attendance": false}
+
+6. ESP32-LCD polling
+   → Nhận được: {timestamp: X, message: "Nguyen Van A (Da diem danh)"}
+   → Chuyển SHOWING_RESULT
+
+7. ESP32-LCD hiển thị
+   → LCD: "  CHAO MUNG!   "
+           " (Da diem danh)"
+   → Buzzer: playSuccessSound()
+   → Giữ 5 giây → COOLDOWN → IDLE
+
+Kết quả: KHÔNG tạo bản ghi mới, tránh duplicate
+
+
+SCENARIO 6: CHƯA BẬT SESSION
+-----------------------------
+
+1. Admin CHƯA bật session điểm danh
+   → CURRENT_SESSION_ID = None
+
+2. Sinh viên đi qua radar
+   → ESP32-LCD gửi trigger → ESP32-CAM chụp ảnh
+
+3. ESP32-CAM upload ảnh
+   → POST /api/recognize
+
+4. Server kiểm tra
+   → if CURRENT_SESSION_ID is None:
+     └─ LAST_RECOGNITION_RESULT = {timestamp, message: "Chua bat dau"}
+     └─ Response: {"status": "error", "message": "Chua bat dau"}
+
+5. ESP32-LCD polling
+   → Nhận được: {timestamp: X, message: "Chua bat dau"}
+   → Chuyển SHOWING_RESULT
+
+6. ESP32-LCD hiển thị
+   → LCD: " CHUA BAT DAU! "
+           "  BAT SESSION  "
+   → Buzzer: playErrorSound() (3 beeps)
+   → Giữ 5 giây → COOLDOWN → IDLE
+
+Kết quả: Nhắc nhở admin bật session
+
+
+SCENARIO 7: CAMERA KHÔNG HOẠT ĐỘNG
+-----------------------------------
+
+1. ESP32-LCD gửi trigger qua ESP-NOW
+   → esp_now_send() → Result: ESP_OK
+
+2. ESP32-CAM KHÔNG PHẢN HỒI (tắt máy, lỗi, mất kết nối)
+   → Không có trigger được xử lý
+   → Không có upload ảnh lên server
+
+3. ESP32-LCD polling
+   → GET /api/result/latest
+   → Nhận được timestamp cũ (< stateStartTime)
+   → Chờ... chờ... chờ...
+   → Timeout 15 giây!
+
+4. ESP32-LCD hiển thị lỗi
+   → LCD: " LOI HE THONG! "
+           " THU LAI      "
+   → Buzzer: playErrorSound()
+   → Chuyển IDLE
+
+Giải pháp: Kiểm tra ESP32-CAM (nguồn, WiFi, Serial logs)
+
+
+================================================================================
+                        7. API ENDPOINTS SUMMARY
+================================================================================
+
+STUDENT MANAGEMENT:
+-------------------
+POST   /api/students/create                  - Tạo sinh viên mới
+POST   /api/students/{student_id}/add-photo  - Thêm ảnh khuôn mặt
+GET    /api/students                         - Lấy danh sách sinh viên
+GET    /api/students/{student_id}            - Chi tiết sinh viên
+DELETE /api/students/{student_id}            - Xóa sinh viên
+
+CLASS MANAGEMENT:
+-----------------
+POST   /api/classes/create                   - Tạo lớp học
+GET    /api/classes                          - Lấy danh sách lớp
+GET    /api/classes/{class_id}               - Chi tiết lớp
+DELETE /api/classes/{class_id}               - Xóa lớp
+POST   /api/classes/{class_id}/students/{student_id}  - Thêm SV vào lớp
+DELETE /api/classes/{class_id}/students/{student_id}  - Xóa SV khỏi lớp
+GET    /api/classes/{class_id}/students      - Danh sách SV trong lớp
+
+SESSION & ATTENDANCE:
+---------------------
+POST   /api/sessions/start                   - Bắt đầu điểm danh
+POST   /api/sessions/{session_id}/end        - Kết thúc điểm danh
+GET    /api/sessions/current                 - Session hiện tại
+GET    /api/classes/{class_id}/sessions      - Lịch sử sessions
+GET    /api/sessions/{session_id}/attendances - Danh sách đã điểm danh
+GET    /api/sessions/{session_id}/report     - Báo cáo chi tiết
+
+FACE RECOGNITION (ESP32):
+-------------------------
+POST   /api/recognize                        - Nhận diện khuôn mặt
+GET    /api/result/latest                    - Lấy kết quả nhận diện
+
+STATIC:
+-------
+GET    /static/index.html                    - Web UI
+GET    /                                     - Redirect to /static/index.html
+
+
+================================================================================
+                        8. CẤU HÌNH HỆ THỐNG
+================================================================================
+
+ESP32-CAM (camera_client.ino):
+-------------------------------
+- WiFi SSID: "Your_SSID"
+- WiFi Password: "Your_Password"
+- Server IP: "192.168.x.x" (IP của máy chạy backend)
+- Server Port: 8080
+- Camera Resolution: FRAMESIZE_CIF (352x288)
+- JPEG Quality: 15 (PSRAM) / 18 (no PSRAM)
+- Flash LED: GPIO 4
+- ESP-NOW Peer: MAC address của ESP32-LCD
+
+ESP32-LCD (testlcd.ino):
+-------------------------
+- WiFi SSID: "Your_SSID"
+- WiFi Password: "Your_Password"
+- Server IP: "192.168.x.x"
+- Server Port: 8080
+- LCD I2C Address: 0x27
+- LCD Size: 16x2
+- Radar Sensor: GPIO 32
+- Buzzer: GPIO 13 (Active Buzzer)
+- ESP-NOW Peer: MAC address của ESP32-CAM
+
+Backend Server (main.py):
+--------------------------
+- MongoDB URI: "mongodb://localhost:27017/"
+- Database Name: "face_attendance_db"
+- Host: 0.0.0.0
+- Port: 8080
+- Workers: 2
+- Anti-Spoofing Model: training_anti_spoof/antispoof_model.pth (optional)
+- Face Recognition Threshold: 0.5
+- Anti-Spoofing Threshold: 0.5
+
+
+================================================================================
+                        9. TROUBLESHOOTING
+================================================================================
+
+VẤN ĐỀ 1: ESP32-CAM không chụp được ảnh
+----------------------------------------
+Nguyên nhân:
+- Camera init failed
+- PSRAM not found (model không hỗ trợ)
+- Chân camera bị lỏng
+
+Debug:
+- Mở Serial Monitor (115200 baud)
+- Kiểm tra log: "Camera init succeeded" hay "Camera init failed"
+- Nếu failed → Kiểm tra model ESP32-CAM, chân kết nối
+
+VẤN ĐỀ 2: ESP32-LCD không gửi được trigger
+-------------------------------------------
+Nguyên nhân:
+- ESP-NOW init failed
+- MAC address sai
+- Khoảng cách quá xa (> 100m ngoài trời, > 20m trong nhà)
+
+Debug:
+- Serial Monitor: "ESP-NOW: Failed to send trigger!"
+- Kiểm tra MAC address trong code (phải đúng MAC của ESP32-CAM)
+- Kiểm tra WiFi channel (2 ESP32 phải cùng channel)
+
+VẤN ĐỀ 3: Server không nhận được ảnh
+-------------------------------------
+Nguyên nhân:
+- Server chưa chạy
+- Windows Firewall block port 8080
+- IP address sai trong ESP32 code
+- ESP32 và server không cùng mạng
+
+Debug:
+- Kiểm tra server: curl http://localhost:8080/
+- Kiểm tra firewall: netstat -an | findstr 8080
+- Kiểm tra IP: ipconfig (trên máy server)
+- Ping từ ESP32 đến server (nếu có Serial)
+
+VẤN ĐỀ 4: Nhận diện sai người
+------------------------------
+Nguyên nhân:
+- Chỉ có 1 ảnh training (chưa đủ)
+- Ảnh training chất lượng kém
+- Góc độ chụp khác quá nhiều
+- Lighting khác nhau
+
+Giải pháp:
+- Thêm 3-5 ảnh cho mỗi sinh viên
+- Chụp ảnh với nhiều góc độ (chính diện, nghiêng trái, nghiêng phải)
+- Chụp trong điều kiện ánh sáng khác nhau
+- Nếu vẫn sai → Giảm threshold xuống 0.4 (trong main.py)
+
+VẤN ĐỀ 5: LCD hiển thị lung tung
+---------------------------------
+Nguyên nhân:
+- I2C address sai (không phải 0x27)
+- Dây I2C chập mạch
+- LCD lỗi
+
+Debug:
+- Scan I2C: Dùng I2C Scanner sketch để tìm địa chỉ đúng
+- Kiểm tra dây: SDA, SCL, VCC, GND
+- Test LCD: Chạy Hello World example
+
+VẤN ĐỀ 6: Buzzer kêu liên tục
+------------------------------
+Nguyên nhân:
+- Dùng Active Buzzer nhưng nối sai chân
+- GPIO có pull-up resistor → HIGH khi boot
+
+Giải pháp:
+- Dùng GPIO 13 (có internal pull-down)
+- Hoặc thêm external pull-down resistor 10kΩ
+- Đảm bảo digitalWrite(SPEAKER_PIN, LOW) trong setup()
+
+VẤN ĐỀ 7: MongoDB connection failed
+------------------------------------
+Nguyên nhân:
+- MongoDB chưa cài đặt
+- MongoDB service chưa chạy
+- URI sai
+
+Giải pháp:
+- Cài MongoDB Community Server
+- Start service: net start MongoDB (Windows)
+- Kiểm tra URI trong main.py
+
+
+================================================================================
+                        10. NÂNG CẤP TƯƠNG LAI
+================================================================================
+
+1. Lưu ảnh điểm danh:
+   - Lưu ảnh vào server (temp_images → permanent storage)
+   - Lưu image_url vào attendances.image_url
+   - Web UI hiển thị ảnh trong báo cáo
+
+2. Email/SMS thông báo:
+   - Gửi email cho sinh viên khi điểm danh thành công
+   - Gửi SMS cho giảng viên khi kết thúc session
+
+3. Dashboard analytics:
+   - Biểu đồ tỷ lệ điểm danh theo thời gian
+   - Top sinh viên chăm chỉ / sinh viên vắng nhiều
+   - Thống kê theo lớp, theo tháng
+
+4. Export báo cáo:
+   - Export Excel/PDF
+   - In báo cáo điểm danh
+
+5. Face recognition nâng cao:
+   - Sử dụng model mạnh hơn (ArcFace, FaceNet)
+   - Train custom model trên dataset riêng
+   - Tăng độ chính xác lên 99%+
+
+6. Anti-spoofing nâng cao:
+   - Sử dụng 3D depth sensor
+   - IR camera
+   - Multi-modal (RGB + Depth + IR)
+
+7. Hỗ trợ nhiều camera:
+   - Nhiều ESP32-CAM cho lớp học lớn
+   - Load balancing
+   - Distributed processing
+
+8. Mobile app:
+   - Android/iOS app
+   - Push notification real-time
+   - Quản lý từ xa
+
+
+================================================================================
+                            KẾT LUẬN
+================================================================================
+
+Hệ thống điểm danh IoT nhận diện khuôn mặt là một giải pháp hoàn chỉnh, tích hợp
+hardware (ESP32), backend (FastAPI + MongoDB), và frontend (Web UI) để tự động
+hóa quy trình điểm danh.
+
+ƯU ĐIỂM:
+--------
+✓ Tự động hoàn toàn (không cần tương tác người dùng)
+✓ Real-time (ESP-NOW < 10ms latency)
+✓ Chính xác cao (3-5 ảnh training cho mỗi sinh viên)
+✓ Bảo mật (Anti-spoofing chống giả mạo)
+✓ Quản lý đầy đủ (sinh viên, lớp, session, báo cáo)
+✓ UI chuyên nghiệp (gradient, responsive, real-time)
+✓ Dễ mở rộng (thêm camera, thêm tính năng)
+
+HẠN CHẾ:
+--------
+✗ Phụ thuộc WiFi (nếu mất mạng → không hoạt động)
+✗ Điều kiện ánh sáng ảnh hưởng (tối quá → flash, sáng quá → overexposed)
+✗ Khoảng cách phát hiện giới hạn (radar ~ 5-7m)
+✗ Anti-spoofing chưa hoàn hảo (mặt nạ 3D vẫn có thể qua)
+
+Tổng quan, đây là một hệ thống IoT thực tế, có thể triển khai ngay trong môi
+trường học tập hoặc doanh nghiệp với chi phí thấp và hiệu quả cao.
+
+================================================================================
+                            HẾT FILE TỔNG QUAN
+================================================================================
+

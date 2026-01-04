@@ -1,23 +1,72 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+"""
+Backend API cho Hệ thống Điểm danh IoT với Face Recognition & Anti-Spoofing
+- Face Recognition: face_recognition library (128D embeddings)
+- Anti-Spoofing: MobileNetV2 custom trained model
+- Database: MongoDB
+- APIs: Student, Class, Session, Attendance Management
+"""
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import List, Optional
 import uvicorn
 import numpy as np
 import cv2
 import io
 import os
 import threading
-from datetime import datetime
+import time
+import asyncio
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from database import test_connection, create_student, get_all_students, create_session, mark_attendance, sessions_collection
-from face_utils import detect_face, get_face_embedding, align_face, find_match, get_face_landmarks, load_antispoof_model, check_liveness
+import pytz
 
-app = FastAPI(title="ESP32 Face Attendance API")
+# Timezone Việt Nam (UTC+7)
+VN_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 
-# Mount static files for frontend
+def get_vn_time():
+    """Lấy thời gian hiện tại theo timezone Việt Nam (UTC+7)"""
+    return datetime.now(VN_TZ)
+
+# Import database functions
+from database import (
+    test_connection,
+    # Student
+    create_student, add_student_embedding, get_student_by_id, get_all_students, delete_student, get_all_embeddings,
+    # Class
+    create_class, get_all_classes, get_class_by_id, delete_class,
+    # Class Members
+    add_student_to_class, remove_student_from_class, get_class_students, get_student_classes,
+    # Session
+    create_session, end_session, get_session_by_id, get_class_sessions, is_session_locked,
+    # Attendance
+    mark_attendance, get_session_attendances, check_attendance_status, get_attendance_report, update_attendance_status,
+    # Spoof
+    log_spoof_attempt, get_session_spoof_attempts, mark_spoof_reviewed
+)
+
+# Import face recognition utilities
+from face_utils import (
+    detect_face, get_face_embedding, align_face, get_face_landmarks, 
+    load_antispoof_model, check_liveness
+)
+
+app = FastAPI(
+    title="IoT Face Attendance System",
+    description="Hệ thống điểm danh khuôn mặt cho IoT với ESP32",
+    version="2.0"
+)
+
+# Mount static files
 os.makedirs("static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Create directories for images
+os.makedirs("images/attendance", exist_ok=True)  # Lưu ảnh điểm danh thành công
+os.makedirs("images/spoof", exist_ok=True)        # Lưu ảnh giả mạo
+app.mount("/images", StaticFiles(directory="images"), name="images")
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,313 +76,701 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global variable to store current active session ID
+# ===================================
+# GLOBAL STATE
+# ===================================
+
+# Current active session
 CURRENT_SESSION_ID = None
+CURRENT_CLASS_ID = None
 
-# Global variable for Anti-Spoof Model
+# Anti-Spoof Model
 ANTISPOOF_MODEL = None
-
-# Sử dụng relative path thay vì hard-coded Windows path
 BASE_DIR = Path(__file__).resolve().parent.parent
 MODEL_PATH = BASE_DIR / "training_anti_spoof" / "antispoof_model.pth"
 
-# Trigger State Management với thread-safe lock
-TRIGGER_LOCK = threading.Lock()
-TRIGGER_PENDING = False
+# Recognition Result (for ESP32 LCD to poll)
+RECOGNITION_LOCK = threading.Lock()
 LAST_RECOGNITION_RESULT = {"timestamp": 0, "message": "Ready"}
 
+
+# ===================================
+# AUTO-END SESSION BACKGROUND TASK
+# ===================================
+
+def auto_end_session_after_duration(session_id: str, duration_minutes: int):
+    """
+    Background task: Tự động kết thúc session sau duration_minutes
+    """
+    time.sleep(duration_minutes * 60)  # Convert to seconds
+    
+    global CURRENT_SESSION_ID, CURRENT_CLASS_ID
+    
+    # Kiểm tra session vẫn active
+    session = get_session_by_id(session_id)
+    if session and session.get("status") == "active":
+        print(f"Auto-ending session {session_id} after {duration_minutes} minutes")
+        end_session(session_id)
+        
+        # Clear global state nếu đây là session hiện tại
+        if CURRENT_SESSION_ID == session_id:
+            CURRENT_SESSION_ID = None
+            CURRENT_CLASS_ID = None
+
+
+# ===================================
+# STARTUP
+# ===================================
+
 @app.on_event("startup")
-def startup_db_client():
+def startup():
+    """Khởi động: kết nối DB và load model"""
     if test_connection():
-        print("Database connected successfully")
+        print("✓ Database connected")
     else:
-        print("Failed to connect to database")
+        print("✗ Database connection failed")
     
-    # Load Anti-Spoof Model
     global ANTISPOOF_MODEL
-    
     if MODEL_PATH.exists():
         ANTISPOOF_MODEL = load_antispoof_model(str(MODEL_PATH))
         if ANTISPOOF_MODEL:
-            print("Anti-Spoofing Model Loaded!")
+            print("✓ Anti-Spoofing Model loaded")
         else:
-            print("WARNING: Could not load Anti-Spoofing Model. Liveness check will be disabled.")
+            print("⚠ Anti-Spoofing Model failed to load")
     else:
-        print(f"WARNING: Model file not found at {MODEL_PATH}. Liveness check disabled.")
+        print(f"⚠ Model file not found: {MODEL_PATH}")
+
+
+# ===================================
+# ROOT & HEALTH
+# ===================================
 
 @app.get("/")
-def read_root():
-    return JSONResponse(content={
-        "message": "Face Attendance API Running", 
+def root():
+    return {
+        "message": "IoT Face Attendance System API",
+        "version": "2.0",
         "docs": "/docs",
         "ui": "/static/index.html"
-    })
+    }
 
-# --- Trigger Management (KHÔNG CẦN THIẾT CHO ESP-NOW, GIỮ LẠI CHO BACKWARD COMPATIBILITY) ---
-@app.post("/api/trigger")
-def set_trigger():
-    """ 
-    [DEPRECATED] Called by Main ESP (Radar) - Không còn cần thiết với ESP-NOW
-    Giữ lại để backward compatibility với HTTP polling mode
+@app.get("/api/health")
+def health_check():
+    return {
+        "status": "healthy",
+        "timestamp": get_vn_time().isoformat(),
+        "session_active": CURRENT_SESSION_ID is not None
+    }
+
+
+# ===================================
+# PYDANTIC MODELS
+# ===================================
+
+class StudentCreate(BaseModel):
+    name: str
+    student_id: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
+class ClassCreate(BaseModel):
+    class_name: str
+    class_code: str
+    teacher: Optional[str] = None
+    description: Optional[str] = None
+
+class SessionCreate(BaseModel):
+    class_id: str
+    session_name: str
+
+
+# ===================================
+# STUDENT MANAGEMENT API
+# ===================================
+
+@app.post("/api/students/create")
+def api_create_student(student: StudentCreate):
+    """Tạo sinh viên mới (chưa có ảnh)"""
+    try:
+        student_mongo_id = create_student(
+            name=student.name,
+            student_id=student.student_id,
+            email=student.email,
+            phone=student.phone
+        )
+        return {
+            "status": "success",
+            "message": f"Đã tạo sinh viên {student.name}",
+            "student_id": student.student_id,
+            "_id": student_mongo_id
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/students/{student_id}/add-photo")
+async def api_add_student_photo(student_id: str, file: UploadFile = File(...)):
     """
-    global TRIGGER_PENDING
-    with TRIGGER_LOCK:  # Thread-safe
-        TRIGGER_PENDING = True
-    print("TRIGGER: Received from Radar (HTTP mode)")
-    return {"status": "ok", "message": "Trigger set"}
-
-@app.get("/api/trigger/check")
-def check_trigger():
-    """ 
-    [DEPRECATED] Called by Camera ESP - Không còn cần thiết với ESP-NOW
-    Giữ lại để backward compatibility với HTTP polling mode
+    Thêm ảnh khuôn mặt cho sinh viên
+    Recommend: Upload 3-5 ảnh với các góc độ khác nhau
     """
-    global TRIGGER_PENDING
-    with TRIGGER_LOCK:  # Thread-safe
-        if TRIGGER_PENDING:
-            TRIGGER_PENDING = False # Consume
-            print("TRIGGER: Consumed by Camera (HTTP mode)")
-            return {"trigger": True}
-    return {"trigger": False}
-
-@app.get("/api/result/latest")
-def get_latest_result():
-    """ Called by Main ESP (Display) - Trả về kết quả nhận diện mới nhất """
-    return LAST_RECOGNITION_RESULT
-
-
-# --- Session Management ---
-@app.post("/api/session/start")
-def start_session(session_name: str = Form(...)):
-    global CURRENT_SESSION_ID
-    CURRENT_SESSION_ID = create_session(session_name)
-    return {"status": "success", "session_id": CURRENT_SESSION_ID, "message": f"Session '{session_name}' started"}
-
-@app.post("/api/session/stop")
-def stop_session():
-    global CURRENT_SESSION_ID
-    CURRENT_SESSION_ID = None
-    return {"status": "success", "message": "Session stopped"}
-
-@app.get("/api/session/current")
-def get_current_session():
-    global CURRENT_SESSION_ID
-    if CURRENT_SESSION_ID:
-        return {"active": True, "session_id": CURRENT_SESSION_ID}
-    return {"active": False, "session_id": None}
-
-@app.get("/api/session/{session_id}")
-def get_session_details(session_id: str):
-    from bson.objectid import ObjectId
-    session = sessions_collection.find_one({"_id": ObjectId(session_id)})
-    if session:
-        # Convert ObjectId to str for JSON serialization
-        session["_id"] = str(session["_id"])
-        return session
-    raise HTTPException(status_code=404, detail="Session not found")
-
-# --- Student Registration ---
-@app.post("/api/register")
-async def register_student(name: str = Form(...), student_id: str = Form(...), file: UploadFile = File(...)):
+    # Kiểm tra sinh viên có tồn tại không
+    student = get_student_by_id(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Không tìm thấy sinh viên")
+    
+    # Đọc ảnh
     contents = await file.read()
     nparr = np.frombuffer(contents, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     
     if img is None:
-        raise HTTPException(status_code=400, detail="Invalid image file")
-
-    # Detect and Align
+        raise HTTPException(status_code=400, detail="File ảnh không hợp lệ")
+    
+    # Detect face
     landmarks = get_face_landmarks(img)
     if not landmarks:
-        raise HTTPException(status_code=400, detail="No face detected in image")
+        raise HTTPException(status_code=400, detail="Không phát hiện khuôn mặt trong ảnh")
     
-    # Use the first face found
+    # Align & extract embedding
     aligned_img = align_face(img, landmarks[0])
-    
-    # Extract Embedding
     embedding = get_face_embedding(aligned_img)
-    if embedding is None:
-        raise HTTPException(status_code=400, detail="Could not extract features from face")
-        
-    # Save to DB
-    # Convert numpy array to list for MongoDB storage
-    embedding_list = embedding.tolist()
-    new_id = create_student(name, student_id, embedding_list)
     
-    return {"status": "success", "student_id": new_id, "message": f"Student {name} registered successfully"}
+    if embedding is None:
+        raise HTTPException(status_code=400, detail="Không thể trích xuất đặc trưng khuôn mặt")
+    
+    # Lưu embedding vào database
+    embedding_list = embedding.tolist()
+    success = add_student_embedding(student_id, embedding_list)
+    
+    if success:
+        # Lấy số lượng ảnh hiện tại
+        updated_student = get_student_by_id(student_id)
+        num_photos = len(updated_student.get("embeddings", []))
+        
+        return {
+            "status": "success",
+            "message": f"Đã thêm ảnh {num_photos} cho sinh viên {student['name']}",
+            "total_photos": num_photos
+        }
+    else:
+        raise HTTPException(status_code=500, detail="Lỗi khi lưu embedding")
 
-# --- Recognition Endpoint (for ESP32) - TĂNG TỐC ---
+
+@app.get("/api/students")
+def api_get_all_students():
+    """Lấy danh sách tất cả sinh viên"""
+    students = get_all_students()
+    return {"status": "success", "students": students}
+
+
+@app.get("/api/students/{student_id}")
+def api_get_student(student_id: str):
+    """Lấy thông tin sinh viên"""
+    student = get_student_by_id(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Không tìm thấy sinh viên")
+    return {"status": "success", "student": student}
+
+
+@app.delete("/api/students/{student_id}")
+def api_delete_student(student_id: str):
+    """Xóa sinh viên"""
+    success = delete_student(student_id)
+    if success:
+        return {"status": "success", "message": f"Đã xóa sinh viên {student_id}"}
+    else:
+        raise HTTPException(status_code=404, detail="Không tìm thấy sinh viên")
+
+
+# ===================================
+# CLASS MANAGEMENT API
+# ===================================
+
+@app.post("/api/classes/create")
+def api_create_class(class_obj: ClassCreate):
+    """Tạo lớp học mới"""
+    try:
+        class_id = create_class(
+            class_name=class_obj.class_name,
+            class_code=class_obj.class_code,
+            teacher=class_obj.teacher,
+            description=class_obj.description
+        )
+        return {
+            "status": "success",
+            "message": f"Đã tạo lớp {class_obj.class_name}",
+            "class_id": class_id
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/classes")
+def api_get_all_classes():
+    """Lấy danh sách tất cả lớp học"""
+    classes = get_all_classes()
+    return {"status": "success", "classes": classes}
+
+
+@app.get("/api/classes/{class_id}")
+def api_get_class(class_id: str):
+    """Lấy thông tin lớp học"""
+    class_obj = get_class_by_id(class_id)
+    if not class_obj:
+        raise HTTPException(status_code=404, detail="Không tìm thấy lớp học")
+    return {"status": "success", "class": class_obj}
+
+
+@app.delete("/api/classes/{class_id}")
+def api_delete_class(class_id: str):
+    """Xóa lớp học"""
+    success = delete_class(class_id)
+    if success:
+        return {"status": "success", "message": f"Đã xóa lớp học"}
+    else:
+        raise HTTPException(status_code=404, detail="Không tìm thấy lớp học")
+
+
+@app.post("/api/classes/{class_id}/students/{student_id}")
+def api_add_student_to_class(class_id: str, student_id: str):
+    """Thêm sinh viên vào lớp"""
+    # Kiểm tra lớp và sinh viên có tồn tại không
+    if not get_class_by_id(class_id):
+        raise HTTPException(status_code=404, detail="Không tìm thấy lớp học")
+    if not get_student_by_id(student_id):
+        raise HTTPException(status_code=404, detail="Không tìm thấy sinh viên")
+    
+    success = add_student_to_class(class_id, student_id)
+    if success:
+        return {"status": "success", "message": "Đã thêm sinh viên vào lớp"}
+    else:
+        raise HTTPException(status_code=400, detail="Sinh viên đã có trong lớp")
+
+
+@app.delete("/api/classes/{class_id}/students/{student_id}")
+def api_remove_student_from_class(class_id: str, student_id: str):
+    """Xóa sinh viên khỏi lớp"""
+    success = remove_student_from_class(class_id, student_id)
+    if success:
+        return {"status": "success", "message": "Đã xóa sinh viên khỏi lớp"}
+    else:
+        raise HTTPException(status_code=404, detail="Sinh viên không có trong lớp")
+
+
+@app.get("/api/classes/{class_id}/students")
+def api_get_class_students(class_id: str):
+    """Lấy danh sách sinh viên trong lớp"""
+    students = get_class_students(class_id)
+    return {"status": "success", "students": students}
+
+
+# ===================================
+# SESSION & ATTENDANCE API
+# ===================================
+
+@app.post("/api/sessions/start")
+def api_start_session(session: SessionCreate, background_tasks: BackgroundTasks):
+    """
+    Bắt đầu phiên điểm danh cho lớp
+    - Tự động kết thúc sau 15 phút
+    """
+    global CURRENT_SESSION_ID, CURRENT_CLASS_ID
+    
+    # Kiểm tra lớp có tồn tại không
+    class_obj = get_class_by_id(session.class_id)
+    if not class_obj:
+        raise HTTPException(status_code=404, detail="Không tìm thấy lớp học")
+    
+    # Tạo session mới (mặc định 15 phút)
+    duration_minutes = 15
+    session_id = create_session(session.class_id, session.session_name, duration_minutes)
+    CURRENT_SESSION_ID = session_id
+    CURRENT_CLASS_ID = session.class_id
+    
+    # Schedule auto-end session sau 15 phút
+    background_tasks.add_task(auto_end_session_after_duration, session_id, duration_minutes)
+    
+    return {
+        "status": "success",
+        "message": f"Đã bắt đầu điểm danh lớp {class_obj['class_name']} (15 phút)",
+        "session_id": session_id,
+        "class_id": session.class_id,
+        "duration_minutes": duration_minutes
+    }
+
+
+@app.post("/api/sessions/{session_id}/end")
+def api_end_session(session_id: str):
+    """Kết thúc phiên điểm danh"""
+    global CURRENT_SESSION_ID, CURRENT_CLASS_ID
+    
+    success = end_session(session_id)
+    if success:
+        if CURRENT_SESSION_ID == session_id:
+            CURRENT_SESSION_ID = None
+            CURRENT_CLASS_ID = None
+        return {"status": "success", "message": "Đã kết thúc phiên điểm danh"}
+    else:
+        raise HTTPException(status_code=404, detail="Không tìm thấy session")
+
+
+@app.get("/api/sessions/current")
+def api_get_current_session():
+    """Lấy thông tin session hiện tại"""
+    global CURRENT_SESSION_ID, CURRENT_CLASS_ID
+    
+    if CURRENT_SESSION_ID:
+        session = get_session_by_id(CURRENT_SESSION_ID)
+        return {
+            "active": True,
+            "session_id": CURRENT_SESSION_ID,
+            "class_id": CURRENT_CLASS_ID,
+            "session": session
+        }
+    else:
+        return {"active": False, "session_id": None}
+
+
+@app.get("/api/classes/{class_id}/sessions")
+def api_get_class_sessions(class_id: str):
+    """Lấy danh sách sessions của lớp"""
+    sessions = get_class_sessions(class_id)
+    return {"status": "success", "sessions": sessions}
+
+
+@app.get("/api/sessions/{session_id}/attendances")
+def api_get_session_attendances(session_id: str):
+    """Lấy danh sách sinh viên đã điểm danh"""
+    attendances = get_session_attendances(session_id)
+    return {"status": "success", "attendances": attendances}
+
+
+@app.get("/api/sessions/{session_id}/report")
+def api_get_attendance_report(session_id: str):
+    """Báo cáo điểm danh: có mặt + vắng mặt"""
+    session = get_session_by_id(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Không tìm thấy session")
+    
+    report = get_attendance_report(session["class_id"], session_id)
+    return {"status": "success", "report": report}
+
+
+# === NEW: Edit Attendance ===
+class AttendanceEdit(BaseModel):
+    student_id: str
+    status: str  # "present" hoặc "absent"
+
+
+@app.put("/api/sessions/{session_id}/attendance")
+def api_edit_attendance(session_id: str, edit: AttendanceEdit):
+    """
+    Sửa trạng thái điểm danh (chỉ trong 15 phút đầu)
+    """
+    # Kiểm tra session có bị lock không
+    if is_session_locked(session_id):
+        raise HTTPException(
+            status_code=403, 
+            detail="Đã hết thời gian chỉnh sửa điểm danh (15 phút)"
+        )
+    
+    # Update attendance
+    success = update_attendance_status(session_id, edit.student_id, edit.status, edited_by="teacher")
+    
+    if success:
+        return {
+            "status": "success",
+            "message": f"Đã cập nhật trạng thái thành '{edit.status}'"
+        }
+    else:
+        raise HTTPException(status_code=400, detail="Không thể cập nhật")
+
+
+@app.get("/api/sessions/{session_id}/lock-status")
+def api_get_session_lock_status(session_id: str):
+    """Kiểm tra session có bị khóa (không cho sửa) không"""
+    session = get_session_by_id(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Không tìm thấy session")
+    
+    is_locked = is_session_locked(session_id)
+    now = get_vn_time().replace(tzinfo=None)  # Remove timezone for comparison
+    lock_time = session.get("lock_time")
+    
+    if lock_time and now < lock_time:
+        remaining_seconds = int((lock_time - now).total_seconds())
+    else:
+        remaining_seconds = 0
+    
+    return {
+        "status": "success",
+        "is_locked": is_locked,
+        "lock_time": lock_time.isoformat() if lock_time else None,
+        "remaining_seconds": remaining_seconds
+    }
+
+
+@app.get("/api/sessions/{session_id}/spoof-attempts")
+def api_get_spoof_attempts(session_id: str):
+    """Lấy danh sách các lần giả mạo trong session"""
+    spoofs = get_session_spoof_attempts(session_id)
+    return {
+        "status": "success",
+        "spoof_attempts": spoofs,
+        "count": len(spoofs)
+    }
+
+
+@app.put("/api/spoof/{spoof_id}/mark-reviewed")
+def api_mark_spoof_reviewed(spoof_id: str):
+    """Đánh dấu giảng viên đã xem spoof attempt"""
+    success = mark_spoof_reviewed(spoof_id)
+    if success:
+        return {"status": "success", "message": "Đã đánh dấu đã xem"}
+    else:
+        raise HTTPException(status_code=404, detail="Không tìm thấy spoof attempt")
+
+
+# ===================================
+# FACE RECOGNITION (ESP32)
+# ===================================
+
 @app.post("/api/recognize")
-async def recognize_face(file: UploadFile = File(...)):
+async def api_recognize_face(file: UploadFile = File(...)):
+    """
+    Endpoint nhận ảnh từ ESP32-CAM và nhận diện khuôn mặt
+    Tự động điểm danh nếu có session active
+    """
     global CURRENT_SESSION_ID, ANTISPOOF_MODEL, LAST_RECOGNITION_RESULT
     
-    # QUAN TRỌNG: Chỉ nhận diện khi có session active
+    # Kiểm tra có session active không
     if not CURRENT_SESSION_ID:
-        LAST_RECOGNITION_RESULT = {"timestamp": datetime.now().timestamp(), "message": "Chua bat dau"}
+        with RECOGNITION_LOCK:
+            LAST_RECOGNITION_RESULT = {
+                "timestamp": get_vn_time().timestamp(),
+                "message": "Chua bat dau"
+            }
         return JSONResponse(
             status_code=200,
-            content={"status": "error", "message": "No active session. Please start a session first."}
+            content={"status": "error", "message": "Chua bat dau"}
         )
-
-    # Đọc file nhanh hơn với chunk size lớn
+    
+    # Đọc ảnh
     contents = await file.read()
     nparr = np.frombuffer(contents, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     
     if img is None:
-        LAST_RECOGNITION_RESULT = {"timestamp": datetime.now().timestamp(), "message": "Loi anh"}
+        with RECOGNITION_LOCK:
+            LAST_RECOGNITION_RESULT = {
+                "timestamp": get_vn_time().timestamp(),
+                "message": "Loi anh"
+            }
         return JSONResponse(
             status_code=200,
-            content={"status": "failed", "message": "Invalid image file"}
+            content={"status": "error", "message": "Loi anh"}
         )
-
-    # 1. Detect & Extract (TĂNG TỐC)
+    
+    # Detect face
     face_locations = detect_face(img)
     if not face_locations:
-        LAST_RECOGNITION_RESULT = {"timestamp": datetime.now().timestamp(), "message": "Ko phat hien"}
+        with RECOGNITION_LOCK:
+            LAST_RECOGNITION_RESULT = {
+                "timestamp": get_vn_time().timestamp(),
+                "message": "Ko phat hien"
+            }
         return JSONResponse(
             status_code=200,
-            content={"status": "failed", "message": "No face detected"}
+            content={"status": "failed", "message": "Ko phat hien"}
         )
     
-    # Take first face
+    # Lấy face đầu tiên
     top, right, bottom, left = face_locations[0]
-    face_loc = (top, right, bottom, left)
+    face_img = img[top:bottom, left:right]
     
-    # LIVENESS CHECK
+    # Anti-Spoofing check
     if ANTISPOOF_MODEL:
-        is_real, score = check_liveness(img, ANTISPOOF_MODEL, face_loc)
-        print(f"Liveness Check: {'REAL' if is_real else 'FAKE'} (Score: {score:.4f})")
+        is_real, confidence = check_liveness(face_img, ANTISPOOF_MODEL, face_locations[0])
+        print(f"Anti-spoofing: is_real={is_real}, confidence={confidence:.3f}")
         
         if not is_real:
-            # Save spoof attempt for analysis
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"SPOOF_{timestamp}.jpg"
-            save_dir = "static/spoofs"
-            os.makedirs(save_dir, exist_ok=True)
-            cv2.imwrite(os.path.join(save_dir, filename), img)
+            # Lưu ảnh giả mạo
+            timestamp_str = get_vn_time().strftime("%Y%m%d_%H%M%S")
+            spoof_image_path = f"images/spoof/SPOOF_{timestamp_str}.jpg"
+            cv2.imwrite(spoof_image_path, img)
             
-
-            LAST_RECOGNITION_RESULT = {"timestamp": datetime.now().timestamp(), "message": "GIA MAO (FAKE)"}
+            # Log vào database
+            log_spoof_attempt(
+                session_id=CURRENT_SESSION_ID,
+                image_url=f"/{spoof_image_path}",
+                confidence=float(confidence)
+            )
             
+            with RECOGNITION_LOCK:
+                LAST_RECOGNITION_RESULT = {
+                    "timestamp": get_vn_time().timestamp(),
+                    "message": "GIA MAO"
+                }
             return JSONResponse(
                 status_code=200,
-                content={
-                    "status": "failed", 
-                    "match": False, 
-                    "message": "Spoof detected (Fake Face)",
-                    "liveness_score": score
-                }
+                content={"status": "failed", "message": "GIA MAO", "confidence": confidence}
             )
-
-    # If Real (or no model), proceed to recognition
-    embedding = get_face_embedding(img, face_location=face_loc)
     
-
-    
-    if embedding is None:
-        LAST_RECOGNITION_RESULT = {"timestamp": datetime.now().timestamp(), "message": "Loi trich xuat"}
+    # Align & extract embedding
+    landmarks = get_face_landmarks(img)
+    if not landmarks:
+        with RECOGNITION_LOCK:
+            LAST_RECOGNITION_RESULT = {
+                "timestamp": get_vn_time().timestamp(),
+                "message": "Ko phat hien"
+            }
         return JSONResponse(
             status_code=200,
-            content={"status": "failed", "message": "Could not extract features"}
+            content={"status": "failed", "message": "Ko phat hien"}
+        )
+    
+    aligned_img = align_face(img, landmarks[0])
+    embedding = get_face_embedding(aligned_img)
+    
+    if embedding is None:
+        with RECOGNITION_LOCK:
+            LAST_RECOGNITION_RESULT = {
+                "timestamp": get_vn_time().timestamp(),
+                "message": "Ko phat hien"
+            }
+        return JSONResponse(
+            status_code=200,
+            content={"status": "failed", "message": "Ko phat hien"}
+        )
+    
+    # So sánh với database
+    all_embeddings = get_all_embeddings()
+    if not all_embeddings:
+        with RECOGNITION_LOCK:
+            LAST_RECOGNITION_RESULT = {
+                "timestamp": get_vn_time().timestamp(),
+                "message": "Khong nhan ra"
+            }
+        return JSONResponse(
+            status_code=200,
+            content={"status": "failed", "message": "Khong nhan ra"}
+        )
+    
+    # Tìm match
+    best_match = None
+    best_distance = float('inf')
+    THRESHOLD = 0.6  # Cosine distance threshold
+    
+    for entry in all_embeddings:
+        db_embedding = np.array(entry["embedding"])
+        # Cosine distance
+        distance = 1 - np.dot(embedding, db_embedding) / (
+            np.linalg.norm(embedding) * np.linalg.norm(db_embedding)
         )
         
-    # 2. Match
-    all_students = get_all_students()
-    match = find_match(embedding, all_students, threshold=0.5)
+        if distance < best_distance:
+            best_distance = distance
+            best_match = entry
     
-    if match:
-        # Save image for display
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{match['student_id']}_{timestamp}.jpg"
-        save_dir = "static/captures"
-        os.makedirs(save_dir, exist_ok=True)
-        save_path = os.path.join(save_dir, filename)
-        
-        # Save the original image
-        cv2.imwrite(save_path, img)
-        
-        image_url = f"/static/captures/{filename}"
+    # Kiểm tra threshold
+    if best_distance > THRESHOLD:
+        with RECOGNITION_LOCK:
+            LAST_RECOGNITION_RESULT = {
+                "timestamp": get_vn_time().timestamp(),
+                "message": "Khong nhan ra"
+            }
+        return JSONResponse(
+            status_code=200,
+            content={"status": "failed", "message": "Khong nhan ra"}
+        )
+    
+    # Nhận diện thành công -> Điểm danh
+    student_id = best_match["student_id"]
+    student_name = best_match["name"]
+    
+    # Kiểm tra sinh viên có trong lớp không
+    class_students = get_class_students(CURRENT_CLASS_ID)
+    class_student_ids = [s["student_id"] for s in class_students]
+    
+    if student_id not in class_student_ids:
+        with RECOGNITION_LOCK:
+            LAST_RECOGNITION_RESULT = {
+                "timestamp": get_vn_time().timestamp(),
+                "message": "Ko thuoc lop"
+            }
+        return JSONResponse(
+            status_code=200,
+            content={"status": "failed", "message": f"{student_name} khong thuoc lop nay"}
+        )
+    
+    # Lưu ảnh điểm danh
+    timestamp_str = get_vn_time().strftime("%Y%m%d_%H%M%S")
+    attendance_image_path = f"images/attendance/{student_id}_{timestamp_str}.jpg"
+    cv2.imwrite(attendance_image_path, img)
+    image_url = f"/{attendance_image_path}"
+    
+    # Điểm danh
+    is_new = mark_attendance(CURRENT_SESSION_ID, student_id, image_url=image_url, status="present")
+    
+    if is_new:
+        message = student_name
+        with RECOGNITION_LOCK:
+            LAST_RECOGNITION_RESULT = {
+                "timestamp": get_vn_time().timestamp(),
+                "message": message
+            }
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": message,
+                "student_id": student_id,
+                "new_attendance": True,
+                "image_url": image_url
+            }
+        )
+    else:
+        # Đã điểm danh rồi
+        message = f"{student_name} (Da diem danh)"
+        with RECOGNITION_LOCK:
+            LAST_RECOGNITION_RESULT = {
+                "timestamp": get_vn_time().timestamp(),
+                "message": message
+            }
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": message,
+                "student_id": student_id,
+                "new_attendance": False,
+                "image_url": image_url
+            }
+        )
 
-        # 3. Mark Attendance
-        marked = mark_attendance(CURRENT_SESSION_ID, match["student_id"], match["name"], image_url)
-        
-        # Update Last Result for LCD
-        LAST_RECOGNITION_RESULT = {"timestamp": datetime.now().timestamp(), "message": match["name"]}
-        
-        if marked:
-            print(f"MARKED: {match['name']}")
-            return JSONResponse(
-                status_code=200,
-                content={"status": "success", "match": True, "name": match["name"], "message": "Attendance marked"}
-            )
-        else:
-            print(f"ALREADY MARKED: {match['name']}")
-            return JSONResponse(
-                status_code=200,
-                content={"status": "success", "match": True, "name": match["name"], "message": "Already marked"}
-            )
-    
-    LAST_RECOGNITION_RESULT = {"timestamp": datetime.now().timestamp(), "message": "Khong nhan ra"}
-    return JSONResponse(
-        status_code=200,
-        content={"status": "failed", "match": False, "message": "Unknown person"}
-    )
 
-# --- Security Logs Endpoint ---
-@app.get("/api/spoofs")
-def get_spoof_logs():
+@app.get("/api/result/latest")
+def api_get_latest_result():
     """
-    Returns list of saved spoof attempts for UI display.
+    Endpoint cho ESP32-LCD để lấy kết quả nhận diện mới nhất
     """
-    spoof_dir = "static/spoofs"
-    if not os.path.exists(spoof_dir):
-        return []
-        
-    # List files, sorted by newest first
-    files = sorted(os.listdir(spoof_dir), reverse=True)
-    logs = []
-    
-    for f in files:
-        if f.endswith(".jpg") or f.endswith(".png"):
-            # Filename format: SPOOF_YYYYMMDD_HHMMSS.jpg
-            # Parse time for display
-            try:
-                # Extract timestamp part
-                ts_str = f.replace("SPOOF_", "").replace(".jpg", "").replace(".png", "")
-                dt = datetime.strptime(ts_str, "%Y%m%d_%H%M%S")
-                time_display = dt.strftime("%H:%M:%S %d/%m")
-            except:
-                time_display = "Unknown"
-                
-            logs.append({
-                "filename": f,
-                "url": f"/static/spoofs/{f}",
-                "timestamp": time_display
-            })
-    
-    return logs
+    with RECOGNITION_LOCK:
+        return LAST_RECOGNITION_RESULT
+
+
+# ===================================
+# RUN SERVER
+# ===================================
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("ESP32 Face Attendance System - Backend Server")
-    print("=" * 60)
-    print(f"Model path: {MODEL_PATH}")
-    print(f"Base directory: {BASE_DIR}")
-    print("Starting server on http://0.0.0.0:8080")
-    print("API Docs: http://localhost:8080/docs")
-    print("=" * 60)
-    
-    # Tối ưu server cho tốc độ cao
-    import uvicorn
     uvicorn.run(
-        "main:app", 
-        host="0.0.0.0", 
-        port=8080, 
-        reload=True,
-        timeout_keep_alive=20,   # Giảm từ 30s → 20s (đủ cho ESP32)
-        limit_concurrency=20,    # Tăng từ 10 → 20 (xử lý nhiều requests hơn)
-        limit_max_requests=2000, # Tăng từ 1000 → 2000
-        workers=1,               # Single worker cho development
-        backlog=50               # Tăng queue size
+        "main:app",
+        host="0.0.0.0",
+        port=8080,
+        reload=False,
+        timeout_keep_alive=20,
+        limit_concurrency=20,
+        limit_max_requests=2000,
+        backlog=50
     )

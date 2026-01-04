@@ -40,9 +40,9 @@ def align_face(image_np, landmarks):
     right_eye_center = np.mean(right_eye, axis=0).astype("int")
     
     # Calculate angle
-    dy = right_eye_center[1] - left_eye_center[1]
-    dx = right_eye_center[0] - left_eye_center[0]
-    angle = np.degrees(np.arctan2(dy, dx))
+    dy = right_eye_center[1] - left_eye_center[1]  #tao vector tu 2 diem
+    dx = right_eye_center[0] - left_eye_center[0]  #tao vector tu 2 diem
+    angle = np.degrees(np.arctan2(dy, dx))  #tinh goc nghieng giua 2 mat
     
     # Calculate center of rotation
     eye_center = (int((left_eye_center[0] + right_eye_center[0]) // 2),
