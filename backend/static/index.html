@@ -1,10 +1,10 @@
 <!DOCTYPE html>
 <html lang="vi">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hệ Thống Điểm Danh IoT</title>
-    <style>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Hệ Thống Điểm Danh IoT</title>
+        <style>
         * {
             margin: 0;
             padding: 0;
@@ -259,6 +259,52 @@
         .grid-2 {
             grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
         }
+        
+        /* Toggle Switch for Anti-Spoof */
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 24px;
+        }
+        
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .3s;
+            border-radius: 24px;
+        }
+        
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .3s;
+            border-radius: 50%;
+        }
+        
+        input:checked + .slider {
+            background-color: #10b981;
+        }
+        
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
 
         .alert {
             padding: 12px 16px;
@@ -404,256 +450,405 @@
             background: linear-gradient(135deg, #64748b 0%, #475569 100%);
         }
     </style>
-</head>
-<body>
-    <div class="container">
-        <!-- Header -->
-        <div class="header">
-            <h1>🎓 Hệ Thống Điểm Danh IoT</h1>
-            <div class="status">
-                <div class="status-dot"></div>
-                <span>Hệ thống hoạt động</span>
-            </div>
-        </div>
-
-        <!-- Tabs -->
-        <div class="tabs">
-            <button class="tab-btn active" onclick="switchTab('students')">👨‍🎓 Sinh viên</button>
-            <button class="tab-btn" onclick="switchTab('classes')">📚 Lớp học</button>
-            <button class="tab-btn" onclick="switchTab('attendance')">✅ Điểm danh</button>
-            <button class="tab-btn" onclick="switchTab('spoofs')">🛡️ Giả mạo</button>
-            <button class="tab-btn" onclick="switchTab('reports')">📊 Báo cáo</button>
-                </div>
-
-        <!-- Tab: Sinh viên -->
-        <div id="students-tab" class="tab-content active">
-            <div class="grid grid-2">
-                <div class="card">
-                    <h2>Thêm sinh viên mới</h2>
-                    <div class="form-group">
-                        <label>Họ và tên</label>
-                        <input type="text" id="student-name" placeholder="Nguyễn Văn A">
-                    </div>
-                    <div class="form-group">
-                        <label>Mã sinh viên</label>
-                        <input type="text" id="student-id" placeholder="B2012345">
-                    </div>
-                    <div class="form-group">
-                        <label>Email (tùy chọn)</label>
-                        <input type="email" id="student-email" placeholder="student@example.com">
-                    </div>
-                    <div class="form-group">
-                        <label>Số điện thoại (tùy chọn)</label>
-                        <input type="tel" id="student-phone" placeholder="0123456789">
-                </div>
-                    <button class="btn btn-primary" onclick="createStudent()">Tạo sinh viên</button>
-            </div>
-
-            <div class="card">
-                    <h2>Thêm ảnh khuôn mặt</h2>
-                    <div class="alert alert-warning">
-                        ⚠️ Khuyến nghị: Upload 3-5 ảnh với các góc độ khác nhau để tăng độ chính xác
-                    </div>
-                    <div class="form-group">
-                        <label>Chọn sinh viên</label>
-                        <select id="photo-student-select">
-                            <option value="">-- Chọn sinh viên --</option>
-                        </select>
-                    </div>
-                    <div class="file-upload" onclick="document.getElementById('student-photo').click()">
-                        <input type="file" id="student-photo" accept="image/*" onchange="uploadPhoto()">
-                        <p>📷 Click để chọn ảnh</p>
-                        <small>Định dạng: JPG, PNG</small>
-                    </div>
-                    <div id="photo-status"></div>
+    </head>
+    <body>
+        <div class="container">
+            <!-- Header -->
+            <div class="header">
+                <h1>🎓 Hệ Thống Điểm Danh IoT</h1>
+                <div class="status">
+                    <div class="status-dot"></div>
+                    <span>Hệ thống hoạt động</span>
                 </div>
             </div>
 
-            <div class="card">
-                <h2>Danh sách sinh viên</h2>
-                <div class="table-container">
-                    <table id="students-table">
-                        <thead>
-                            <tr>
-                                <th>Mã SV</th>
-                                <th>Họ tên</th>
-                                <th>Email</th>
-                                <th>Số ảnh</th>
-                                <th>Hành động</th>
-                            </tr>
-                        </thead>
-                        <tbody></tbody>
-                    </table>
-                </div>
-                </div>
+            <!-- Tabs -->
+            <div class="tabs">
+                <button class="tab-btn active"
+                    onclick="switchTab('students')">👨‍🎓 Sinh viên</button>
+                <button class="tab-btn" onclick="switchTab('classes')">📚 Lớp
+                    học</button>
+                <button class="tab-btn" onclick="switchTab('attendance')">✅ Điểm
+                    danh</button>
+                <button class="tab-btn" onclick="switchTab('spoofs')">🛡️ Giả
+                    mạo</button>
+                <button class="tab-btn" onclick="switchTab('gallery')">📸 Tất cả
+                    ảnh</button>
+                <button class="tab-btn" onclick="switchTab('reports')">📊 Báo
+                    cáo</button>
             </div>
 
-        <!-- Tab: Lớp học -->
-        <div id="classes-tab" class="tab-content">
-            <div class="grid grid-2">
-                <div class="card">
-                    <h2>Tạo lớp học mới</h2>
-                    <div class="form-group">
-                        <label>Tên lớp học</label>
-                        <input type="text" id="class-name" placeholder="Lập trình IoT">
+            <!-- Tab: Sinh viên -->
+            <div id="students-tab" class="tab-content active">
+                <div class="grid grid-2">
+                    <div class="card">
+                        <h2>Thêm sinh viên mới</h2>
+                        <div class="form-group">
+                            <label>Họ và tên</label>
+                            <input type="text" id="student-name"
+                                placeholder="Nguyễn Văn A">
+                        </div>
+                        <div class="form-group">
+                            <label>Mã sinh viên</label>
+                            <input type="text" id="student-id"
+                                placeholder="B2012345">
+                        </div>
+                        <div class="form-group">
+                            <label>Email (tùy chọn)</label>
+                            <input type="email" id="student-email"
+                                placeholder="student@example.com">
+                        </div>
+                        <div class="form-group">
+                            <label>Số điện thoại (tùy chọn)</label>
+                            <input type="tel" id="student-phone"
+                                placeholder="0123456789">
+                        </div>
+                        <button class="btn btn-primary"
+                            onclick="createStudent()">Tạo sinh viên</button>
                     </div>
-                    <div class="form-group">
-                        <label>Mã lớp</label>
-                        <input type="text" id="class-code" placeholder="IOT2024">
-                    </div>
-                    <div class="form-group">
-                        <label>Giảng viên (tùy chọn)</label>
-                        <input type="text" id="class-teacher" placeholder="TS. Nguyễn Văn B">
-                    </div>
-                    <div class="form-group">
-                        <label>Mô tả (tùy chọn)</label>
-                        <textarea id="class-description" rows="3" placeholder="Mô tả về lớp học..."></textarea>
-                    </div>
-                    <button class="btn btn-primary" onclick="createClass()">Tạo lớp học</button>
-                </div>
 
-                <div class="card">
-                    <h2>Thêm sinh viên vào lớp</h2>
-                    <div class="form-group">
-                        <label>Chọn lớp</label>
-                        <select id="add-student-class-select">
-                            <option value="">-- Chọn lớp --</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Chọn sinh viên</label>
-                        <select id="add-student-select">
-                            <option value="">-- Chọn sinh viên --</option>
-                        </select>
-                    </div>
-                    <button class="btn btn-success" onclick="addStudentToClass()">Thêm vào lớp</button>
-                </div>
-            </div>
-
-            <div class="card">
-                <h2>Danh sách lớp học</h2>
-                <div class="table-container">
-                    <table id="classes-table">
-                        <thead>
-                            <tr>
-                                <th>Mã lớp</th>
-                                <th>Tên lớp</th>
-                                <th>Giảng viên</th>
-                                <th>Số SV</th>
-                                <th>Hành động</th>
-                            </tr>
-                        </thead>
-                        <tbody></tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- Tab: Điểm danh -->
-        <div id="attendance-tab" class="tab-content">
-            <div id="session-status" class="session-info inactive">
-                <div>
-                    <strong>Trạng thái:</strong> Chưa bắt đầu
-                </div>
-                <div>
-                    <button class="btn btn-success" onclick="showStartSessionModal()">Bắt đầu điểm danh</button>
-        </div>
-    </div>
-
-            <!-- Countdown Timer -->
-            <div id="countdown-timer" style="display: none; background: #fee; padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: center;">
-                <h3 style="color: #d00; margin-bottom: 10px;">⏱️ Thời gian còn lại</h3>
-                <div id="countdown-display" style="font-size: 32px; font-weight: bold; color: #d00;">15:00</div>
-                <p style="margin-top: 10px; color: #666;">Sau thời gian này, không thể chỉnh sửa điểm danh</p>
-            </div>
-
-            <div class="grid grid-2">
-                <div class="card">
-                    <h2>Thống kê</h2>
-                    <div id="attendance-stats">
-                        <p>Chưa có phiên điểm danh</p>
+                    <div class="card">
+                        <h2>Thêm ảnh khuôn mặt</h2>
+                        <div class="alert alert-warning">
+                            ⚠️ Khuyến nghị: Upload 3-5 ảnh với các góc độ khác
+                            nhau để tăng độ chính xác
+                        </div>
+                        <div class="form-group">
+                            <label>Chọn sinh viên</label>
+                            <select id="photo-student-select">
+                                <option value>-- Chọn sinh viên --</option>
+                            </select>
+                        </div>
+                        <div class="file-upload"
+                            onclick="document.getElementById('student-photo').click()">
+                            <input type="file" id="student-photo"
+                                accept="image/*" onchange="uploadPhoto()">
+                            <p>📷 Click để chọn ảnh</p>
+                            <small>Định dạng: JPG, PNG</small>
+                        </div>
+                        <div id="photo-status"></div>
                     </div>
                 </div>
 
                 <div class="card">
-                    <h2>Danh sách lớp (Có mặt / Vắng)</h2>
-                    <div id="attended-list">
+                    <h2>Danh sách sinh viên</h2>
+                    <div class="table-container">
+                        <table id="students-table">
+                            <thead>
+                                <tr>
+                                    <th>Mã SV</th>
+                                    <th>Họ tên</th>
+                                    <th>Email</th>
+                                    <th>Số ảnh</th>
+                                    <th>Hành động</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Lớp học -->
+            <div id="classes-tab" class="tab-content">
+                <div class="grid grid-2">
+                    <div class="card">
+                        <h2>Tạo lớp học mới</h2>
+                        <div class="form-group">
+                            <label>Tên lớp học</label>
+                            <input type="text" id="class-name"
+                                placeholder="Lập trình IoT">
+                        </div>
+                        <div class="form-group">
+                            <label>Mã lớp</label>
+                            <input type="text" id="class-code"
+                                placeholder="IOT2024">
+                        </div>
+                        <div class="form-group">
+                            <label>Giảng viên (tùy chọn)</label>
+                            <input type="text" id="class-teacher"
+                                placeholder="TS. Nguyễn Văn B">
+                        </div>
+                        <div class="form-group">
+                            <label>Mô tả (tùy chọn)</label>
+                            <textarea id="class-description" rows="3"
+                                placeholder="Mô tả về lớp học..."></textarea>
+                        </div>
+                        <button class="btn btn-primary"
+                            onclick="createClass()">Tạo lớp học</button>
+                    </div>
+
+                    <div class="card">
+                        <h2>Thêm sinh viên vào lớp</h2>
+                        <div class="form-group">
+                            <label>Chọn lớp</label>
+                            <select id="add-student-class-select">
+                                <option value>-- Chọn lớp --</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Chọn sinh viên</label>
+                            <select id="add-student-select">
+                                <option value>-- Chọn sinh viên --</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-success"
+                            onclick="addStudentToClass()">Thêm vào lớp</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Danh sách lớp học</h2>
+                    <div class="table-container">
+                        <table id="classes-table">
+                            <thead>
+                                <tr>
+                                    <th>Mã lớp</th>
+                                    <th>Tên lớp</th>
+                                    <th>Giảng viên</th>
+                                    <th>Số SV</th>
+                                    <th>Hành động</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Điểm danh -->
+            <div id="attendance-tab" class="tab-content">
+                <div id="session-status" class="session-info inactive">
+                    <div>
+                        <strong>Trạng thái:</strong> Chưa bắt đầu
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <button class="btn btn-success"
+                            onclick="showStartSessionModal()">Bắt đầu điểm
+                            danh</button>
+                    </div>
+                </div>
+
+                <!-- Anti-Spoof Toggle Card -->
+                <div class="card"
+                    style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); margin-bottom: 20px; border: none;">
+                    <div
+                        style="display: flex; justify-content: space-between; align-items: center; padding: 20px;">
+                        <div
+                            style="display: flex; align-items: center; gap: 15px;">
+                            <div style="font-size: 40px;">🛡️</div>
+                            <div>
+                                <h3
+                                    style="color: white; margin: 0 0 5px 0; font-size: 18px;">Chống
+                                    giả mạo (Anti-Spoofing)</h3>
+                                <p
+                                    style="color: rgba(255,255,255,0.8); margin: 0; font-size: 13px;">Phát
+                                    hiện và ngăn chặn gian lận khuôn mặt</p>
+                            </div>
+                        </div>
+                        <div
+                            style="display: flex; align-items: center; gap: 15px; background: rgba(255,255,255,0.2); padding: 15px 25px; border-radius: 12px;">
+                            <label class="switch"
+                                style="transform: scale(1.2);">
+                                <input type="checkbox" id="anti-spoof-toggle"
+                                    checked onchange="toggleAntiSpoof()">
+                                <span class="slider"></span>
+                            </label>
+                            <span id="anti-spoof-status"
+                                style="font-size: 16px; font-weight: bold; color: white; min-width: 50px;">BẬT</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Camera Livestream -->
+                <div class="card"
+                    style="background: #000; margin-bottom: 20px;">
+                    <div
+                        style="display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #1e293b;">
+                        <h3 style="color: white; margin: 0;">📹 Camera ESP32 -
+                            Livestream</h3>
+                        <div
+                            style="display: flex; gap: 10px; align-items: center;">
+                            <input type="text" id="camera-url"
+                                placeholder="http://192.168.252.200:81/stream"
+                                style="padding: 5px 10px; border-radius: 4px; border: 1px solid #64748b; width: 300px;"
+                                value="http://192.168.252.200:81/stream">
+                            <button class="btn btn-primary"
+                                onclick="connectCamera()"
+                                style="padding: 5px 15px;">🔗 Kết nối</button>
+                            <button class="btn btn-danger"
+                                onclick="disconnectCamera()"
+                                style="padding: 5px 15px;">⏹️ Ngắt</button>
+                            <span id="camera-status"
+                                style="color: #64748b; font-size: 12px;">⚪ Chưa
+                                kết nối</span>
+                        </div>
+                    </div>
+                    <div
+                        style="position: relative; background: #000; min-height: 400px; display: flex; align-items: center; justify-content: center;">
+                        <img id="camera-stream"
+                            style="max-width: 100%; max-height: 600px; display: none;"
+                            alt="Camera Stream">
+                        <div id="camera-placeholder"
+                            style="color: #64748b; text-align: center;">
+                            <div
+                                style="font-size: 48px; margin-bottom: 10px;">📹</div>
+                            <p>Nhập URL camera stream và click "Kết nối"</p>
+                            <p
+                                style="font-size: 12px; margin-top: 10px; font-weight: bold; color: #3b82f6;">
+                                Static IP: http://192.168.252.200:81/stream
+                            </p>
+                            <p
+                                style="font-size: 11px; margin-top: 5px; color: #94a3b8;">
+                                ⚠️ Lưu ý: ESP32-CAM phải cùng mạng WiFi với máy
+                                tính
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Countdown Timer -->
+                <div id="countdown-timer"
+                    style="display: none; background: #fee; padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: center;">
+                    <h3 style="color: #d00; margin-bottom: 10px;">⏱️ Thời gian
+                        còn lại</h3>
+                    <div id="countdown-display"
+                        style="font-size: 32px; font-weight: bold; color: #d00;">15:00</div>
+                    <p style="margin-top: 10px; color: #666;">Sau thời gian này,
+                        không thể chỉnh sửa điểm danh</p>
+                </div>
+
+                <div class="grid grid-2">
+                    <div class="card">
+                        <h2>Thống kê</h2>
+                        <div id="attendance-stats">
+                            <p>Chưa có phiên điểm danh</p>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h2>Danh sách lớp (Có mặt / Vắng)</h2>
+                        <div id="attended-list">
+                            <p>Chưa có dữ liệu</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Giả mạo -->
+            <div id="spoofs-tab" class="tab-content">
+                <div class="card">
+                    <h2>🛡️ Cảnh báo giả mạo</h2>
+                    <p style="color: #d00; margin-bottom: 20px;">Danh sách các
+                        lần giả mạo trong phiên điểm danh hiện tại</p>
+                    <div id="spoofs-list">
                         <p>Chưa có dữ liệu</p>
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- Tab: Giả mạo -->
-        <div id="spoofs-tab" class="tab-content">
-            <div class="card">
-                <h2>🛡️ Cảnh báo giả mạo</h2>
-                <p style="color: #d00; margin-bottom: 20px;">Danh sách các lần giả mạo trong phiên điểm danh hiện tại</p>
-                <div id="spoofs-list">
-                    <p>Chưa có dữ liệu</p>
+            <!-- Tab: Gallery - Tất cả ảnh -->
+            <div id="gallery-tab" class="tab-content">
+                <div class="card">
+                    <h2>📸 Gallery - Tất cả ảnh đã chụp</h2>
+                    <div
+                        style="display: flex; gap: 10px; margin-bottom: 20px; align-items: center;">
+                        <button class="btn btn-primary"
+                            onclick="loadAllImages()">🔄 Refresh</button>
+                        <select id="gallery-filter" onchange="filterGallery()">
+                            <option value="all">Tất cả</option>
+                            <option value="success">Thành công ✅</option>
+                            <option value="spoof">Giả mạo ⚠️</option>
+                        </select>
+                        <span id="gallery-count"
+                            style="margin-left: auto; color: #666;"></span>
+                    </div>
+                    <div id="gallery-container"
+                        style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:15px;"></div>
+                </div>
+            </div>
+
+            <!-- Tab: Báo cáo -->
+            <div id="reports-tab" class="tab-content">
+                <div class="card">
+                    <h2>Lịch sử điểm danh</h2>
+                    <div class="form-group">
+                        <label>Chọn lớp</label>
+                        <select id="report-class-select"
+                            onchange="loadClassSessions()">
+                            <option value>-- Chọn lớp --</option>
+                        </select>
+                    </div>
+                    <div id="sessions-list"></div>
                 </div>
             </div>
         </div>
 
-        <!-- Tab: Báo cáo -->
-        <div id="reports-tab" class="tab-content">
-            <div class="card">
-                <h2>Lịch sử điểm danh</h2>
+        <!-- Modal: Start Session -->
+        <div id="start-session-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Bắt đầu điểm danh</h3>
+                    <button class="close-btn"
+                        onclick="closeModal('start-session-modal')">&times;</button>
+                </div>
                 <div class="form-group">
                     <label>Chọn lớp</label>
-                    <select id="report-class-select" onchange="loadClassSessions()">
-                        <option value="">-- Chọn lớp --</option>
+                    <select id="session-class-select">
+                        <option value>-- Chọn lớp --</option>
                     </select>
                 </div>
-                <div id="sessions-list"></div>
+                <div class="form-group">
+                    <label>Tên phiên</label>
+                    <input type="text" id="session-name"
+                        placeholder="Buổi 1 - Ngày 04/01/2026">
+                </div>
+                <button class="btn btn-success" onclick="startSession()">Bắt
+                    đầu</button>
             </div>
         </div>
-    </div>
 
-    <!-- Modal: Start Session -->
-    <div id="start-session-modal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>Bắt đầu điểm danh</h3>
-                <button class="close-btn" onclick="closeModal('start-session-modal')">&times;</button>
+        <!-- Modal: Class Students -->
+        <div id="class-students-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="modal-class-title">Danh sách sinh viên</h3>
+                    <button class="close-btn"
+                        onclick="closeModal('class-students-modal')">&times;</button>
+                </div>
+                <div id="modal-students-list"></div>
             </div>
-            <div class="form-group">
-                <label>Chọn lớp</label>
-                <select id="session-class-select">
-                    <option value="">-- Chọn lớp --</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label>Tên phiên</label>
-                <input type="text" id="session-name" placeholder="Buổi 1 - Ngày 04/01/2026">
-            </div>
-            <button class="btn btn-success" onclick="startSession()">Bắt đầu</button>
         </div>
-    </div>
 
-    <!-- Modal: Class Students -->
-    <div id="class-students-modal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3 id="modal-class-title">Danh sách sinh viên</h3>
-                <button class="close-btn" onclick="closeModal('class-students-modal')">&times;</button>
+        <!-- Modal: Báo cáo chi tiết -->
+        <div id="report-modal" class="modal">
+            <div class="modal-content" style="max-width: 900px;">
+                <div class="modal-header">
+                    <h3>📊 Báo cáo điểm danh chi tiết</h3>
+                    <button class="close-btn"
+                        onclick="closeModal('report-modal')">&times;</button>
+                </div>
+                <div id="report-content"></div>
             </div>
-            <div id="modal-students-list"></div>
         </div>
-    </div>
 
-    <!-- Modal: Báo cáo chi tiết -->
-    <div id="report-modal" class="modal">
-        <div class="modal-content" style="max-width: 900px;">
-            <div class="modal-header">
-                <h3>📊 Báo cáo điểm danh chi tiết</h3>
-                <button class="close-btn" onclick="closeModal('report-modal')">&times;</button>
+        <!-- Modal: Xem ảnh lớn -->
+        <div id="image-modal" class="modal">
+            <div class="modal-content" style="max-width: 600px;">
+                <div class="modal-header">
+                    <h3 id="image-modal-title">Ảnh điểm danh</h3>
+                    <button class="close-btn"
+                        onclick="closeModal('image-modal')">&times;</button>
+                </div>
+                <div style="text-align: center;">
+                    <img id="image-modal-img" src
+                        style="max-width: 100%; border-radius: 8px;"
+                        alt="Attendance photo">
+                </div>
             </div>
-            <div id="report-content"></div>
         </div>
-    </div>
 
-    <script>
+        <script>
         const API_URL = window.location.origin;
 
         // ===================================
@@ -672,21 +867,26 @@
             document.getElementById(tabName + '-tab').classList.add('active');
             event.target.classList.add('active');
 
-            // Load data for selected tab
-            if (tabName === 'students') {
-                loadStudents();
-                loadStudentsForSelect();
-            } else if (tabName === 'classes') {
-                loadClasses();
-                loadClassesForSelect();
-                loadStudentsForSelect();
-            } else if (tabName === 'attendance') {
-                checkSessionStatus();
-            } else if (tabName === 'spoofs') {
-                loadSpoofAttempts();
-            } else if (tabName === 'reports') {
-                loadClassesForReport();
-            }
+            // Load data for selected tab (sau khi DOM render xong)
+            setTimeout(() => {
+                if (tabName === 'students') {
+                    loadStudents();
+                    loadStudentsForSelect();
+                } else if (tabName === 'classes') {
+                    loadClasses();
+                    loadClassesForSelect();
+                    loadStudentsForSelect();
+                } else if (tabName === 'attendance') {
+                    checkSessionStatus();
+                    loadAntiSpoofStatus();
+                } else if (tabName === 'spoofs') {
+                    loadSpoofAttempts();
+                } else if (tabName === 'gallery') {
+                    loadAllImages();
+                } else if (tabName === 'reports') {
+                    loadClassesForReport();
+                }
+            }, 50); // Đợi 50ms để DOM render xong
         }
 
         // ===================================
@@ -1055,6 +1255,82 @@
             document.getElementById('start-session-modal').classList.add('active');
         }
 
+        // ===================================
+        // ANTI-SPOOF TOGGLE
+        // ===================================
+        
+        async function loadAntiSpoofStatus() {
+            try {
+                const res = await fetch(`${API_URL}/api/anti-spoof/status`);
+                const data = await res.json();
+                
+                const toggle = document.getElementById('anti-spoof-toggle');
+                const statusText = document.getElementById('anti-spoof-status');
+                
+                // Null check để tránh lỗi khi element chưa sẵn sàng
+                if (!toggle || !statusText) {
+                    console.warn('Anti-spoof toggle elements not found, retrying...');
+                    // Retry sau 100ms nếu element chưa có
+                    setTimeout(loadAntiSpoofStatus, 100);
+                    return;
+                }
+                
+                toggle.checked = data.enabled;
+                statusText.textContent = data.enabled ? 'BẬT' : 'TẮT';
+                statusText.style.color = data.enabled ? '#10b981' : '#ef4444';
+            } catch (err) {
+                console.error('Failed to load anti-spoof status:', err);
+            }
+        }
+        
+        async function toggleAntiSpoof() {
+            const toggle = document.getElementById('anti-spoof-toggle');
+            const statusText = document.getElementById('anti-spoof-status');
+            const enabled = toggle.checked;
+            
+            try {
+                const res = await fetch(`${API_URL}/api/anti-spoof/toggle`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({enabled: enabled})
+                });
+                
+                const data = await res.json();
+                
+                statusText.textContent = enabled ? 'BẬT' : 'TẮT';
+                statusText.style.color = enabled ? '#10b981' : '#ef4444';
+                
+                // Hiển thị thông báo
+                const message = enabled 
+                    ? '🛡️ Đã BẬT chống giả mạo' 
+                    : '⚠️ Đã TẮT chống giả mạo (Cẩn thận!)';
+                
+                const alertDiv = document.createElement('div');
+                alertDiv.style.cssText = `
+                    position: fixed;
+                    top: 20px;
+                    right: 20px;
+                    padding: 15px 20px;
+                    background: ${enabled ? '#10b981' : '#ef4444'};
+                    color: white;
+                    border-radius: 8px;
+                    font-weight: bold;
+                    z-index: 10000;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                `;
+                alertDiv.textContent = message;
+                document.body.appendChild(alertDiv);
+                
+                setTimeout(() => alertDiv.remove(), 3000);
+                
+            } catch (err) {
+                console.error('Failed to toggle anti-spoof:', err);
+                alert('Lỗi khi thay đổi trạng thái chống giả mạo!');
+                // Revert toggle
+                toggle.checked = !enabled;
+            }
+        }
+
         async function startSession() {
             const classId = document.getElementById('session-class-select').value;
             const sessionName = document.getElementById('session-name').value;
@@ -1231,14 +1507,18 @@
                 if (report.total_students === 0) {
                     listDiv.innerHTML = '<p>Không có sinh viên trong lớp</p>';
                 } else {
-                    let html = '<table style="width:100%"><thead><tr><th>Mã SV</th><th>Họ tên</th><th>Trạng thái</th><th>Thời gian</th></tr></thead><tbody>';
+                    let html = '<table style="width:100%"><thead><tr><th>Ảnh</th><th>Mã SV</th><th>Họ tên</th><th>Trạng thái</th><th>Thời gian</th></tr></thead><tbody>';
                     
                     // Present students
                     report.present.forEach(att => {
                         const time = att.timestamp ? new Date(att.timestamp).toLocaleTimeString('vi-VN') : '-';
                         const edited = att.edited_at ? '(đã sửa)' : '';
+                        const imageHtml = att.image_url 
+                            ? `<img src="${att.image_url}" style="width:60px;height:60px;object-fit:cover;border-radius:8px;cursor:pointer;" onclick="showImageModal('${att.image_url}', '${att.name}')" alt="${att.name}">`
+                            : '<div style="width:60px;height:60px;background:#ddd;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:10px;">No Img</div>';
                         html += `
                             <tr style="background:#e8f5e9;">
+                                <td>${imageHtml}</td>
                                 <td>${att.student_id}</td>
                                 <td>${att.name}</td>
                                 <td>
@@ -1257,6 +1537,7 @@
                     report.absent.forEach(abs => {
                         html += `
                             <tr style="background:#ffebee;">
+                                <td><div style="width:60px;height:60px;background:#ddd;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:24px;">❌</div></td>
                                 <td>${abs.student_id}</td>
                                 <td>${abs.name}</td>
                                 <td>
@@ -1520,6 +1801,133 @@
             document.getElementById(modalId).classList.remove('active');
         }
 
+        function showImageModal(imageUrl, studentName) {
+            document.getElementById('image-modal-title').textContent = `Ảnh điểm danh - ${studentName}`;
+            document.getElementById('image-modal-img').src = imageUrl;
+            document.getElementById('image-modal').classList.add('active');
+        }
+
+        // ===================================
+        // CAMERA LIVESTREAM
+        // ===================================
+        function connectCamera() {
+            const url = document.getElementById('camera-url').value.trim();
+            if (!url) {
+                alert('Vui lòng nhập URL camera stream!');
+                return;
+            }
+            
+            const img = document.getElementById('camera-stream');
+            const placeholder = document.getElementById('camera-placeholder');
+            const status = document.getElementById('camera-status');
+            
+            // Save to localStorage
+            localStorage.setItem('camera_stream_url', url);
+            
+            img.src = url;
+            img.style.display = 'block';
+            placeholder.style.display = 'none';
+            status.textContent = '🟢 Đã kết nối';
+            status.style.color = '#10b981';
+            
+            // Handle error
+            img.onerror = function() {
+                status.textContent = '🔴 Lỗi kết nối';
+                status.style.color = '#ef4444';
+                alert('Không thể kết nối camera!\n\nKiểm tra:\n1. ESP32-CAM đã bật stream chưa?\n2. URL đúng chưa?\n3. Cùng mạng WiFi chưa?');
+            };
+            
+            img.onload = function() {
+                status.textContent = '🟢 Đang stream';
+                status.style.color = '#10b981';
+            };
+        }
+        
+        function disconnectCamera() {
+            const img = document.getElementById('camera-stream');
+            const placeholder = document.getElementById('camera-placeholder');
+            const status = document.getElementById('camera-status');
+            
+            img.src = '';
+            img.style.display = 'none';
+            placeholder.style.display = 'block';
+            status.textContent = '⚪ Đã ngắt kết nối';
+            status.style.color = '#64748b';
+        }
+        
+        // Auto-connect nếu có URL đã lưu
+        window.addEventListener('load', function() {
+            const savedUrl = localStorage.getItem('camera_stream_url');
+            if (savedUrl) {
+                document.getElementById('camera-url').value = savedUrl;
+            }
+        });
+
+        // ===================================
+        // GALLERY - TẤT CẢ ẢNH
+        // ===================================
+        let allImagesData = [];
+
+        async function loadAllImages() {
+            try {
+                const response = await fetch(`${API_URL}/api/images/all`);
+                const data = await response.json();
+                
+                allImagesData = data.images;
+                document.getElementById('gallery-count').textContent = `Tổng: ${data.total} ảnh`;
+                
+                renderGallery(allImagesData);
+            } catch (error) {
+                console.error('Error loading images:', error);
+                document.getElementById('gallery-container').innerHTML = '<p>Lỗi khi tải ảnh</p>';
+            }
+        }
+
+        function filterGallery() {
+            const filter = document.getElementById('gallery-filter').value;
+            
+            let filtered = allImagesData;
+            if (filter !== 'all') {
+                filtered = allImagesData.filter(img => img.type === filter);
+            }
+            
+            document.getElementById('gallery-count').textContent = `Hiển thị: ${filtered.length} / ${allImagesData.length} ảnh`;
+            renderGallery(filtered);
+        }
+
+        function renderGallery(images) {
+            const container = document.getElementById('gallery-container');
+            
+            if (images.length === 0) {
+                container.innerHTML = '<p>Chưa có ảnh nào</p>';
+                return;
+            }
+            
+            let html = '';
+            images.forEach(img => {
+                const time = new Date(img.timestamp).toLocaleString('vi-VN');
+                const typeLabel = img.type === 'success' ? '✅ Thành công' : '⚠️ Giả mạo';
+                const typeColor = img.type === 'success' ? '#10b981' : '#ef4444';
+                const studentInfo = img.student_id ? `<p style="font-size:11px;color:#333;margin:3px 0;"><strong>${img.student_id}</strong></p>` : '';
+                
+                html += `
+                    <div style="border:2px solid ${typeColor};border-radius:8px;overflow:hidden;background:white;cursor:pointer;transition:transform 0.2s;" 
+                         onmouseover="this.style.transform='scale(1.05)'" 
+                         onmouseout="this.style.transform='scale(1)'"
+                         onclick="showImageModal('${img.url}', '${img.filename}')">
+                        <img src="${img.url}" style="width:100%;height:150px;object-fit:cover;" alt="${img.filename}">
+                        <div style="padding:8px;">
+                            <p style="font-size:10px;color:#666;margin:0;">${time}</p>
+                            ${studentInfo}
+                            <p style="font-size:11px;color:${typeColor};font-weight:bold;margin:3px 0;">${typeLabel}</p>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            container.innerHTML = html;
+        }
+
         // Close modal on background click
         document.querySelectorAll('.modal').forEach(modal => {
             modal.addEventListener('click', (e) => {
@@ -1536,7 +1944,8 @@
             loadStudents();
             loadStudentsForSelect();
             checkSessionStatus();
+            // loadAntiSpoofStatus(); // Chỉ gọi khi vào tab Điểm danh
         });
     </script>
-</body>
+    </body>
 </html>

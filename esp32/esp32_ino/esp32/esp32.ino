@@ -1,7 +1,7 @@
 /*
- * ============================================================
+ * 
  * ESP32 MAIN CONTROLLER - RADAR + LCD + SPEAKER
- * ============================================================
+ * 
  * Chức năng:
  * - Phát hiện chuyển động bằng radar
  * - Gửi trigger qua ESP-NOW đến ESP32-CAM
@@ -17,7 +17,7 @@
  * - Radar: GPIO 4
  * - Speaker: GPIO 25 (PWM)
  * - LCD I2C: SDA=21, SCL=22, Address=0x27
- * ============================================================
+ * 
  */
 
 #include <Wire.h>
@@ -68,10 +68,9 @@ const unsigned long TRIGGER_COOLDOWN = 3000;     // 3s cooldown (đủ để ng�
 const unsigned long RESULT_DISPLAY_TIME = 5000;  // 5s hiển thị kết quả (ĐỦ ĐỂ NHÌN RÕ)
 const unsigned long PROCESSING_TIMEOUT = 15000;  // 15s timeout
 
-// ============================================================
+// 
 // ESP-NOW Callback: Nhận kết quả từ ESP32-CAM
-// ============================================================
-// ESP32 Core v3.x compatible
+// nhan 0xAA xác nhận đã nhận trigger
 void onDataRecv(const esp_now_recv_info *recv_info, const uint8_t *data, int len) {
   if (len > 0 && data[0] == 0xAA) { // Header byte để xác nhận đúng message
     // Đã nhận được xác nhận từ CAM
@@ -79,10 +78,9 @@ void onDataRecv(const esp_now_recv_info *recv_info, const uint8_t *data, int len
   }
 }
 
-// ============================================================
+// 
 // ESP-NOW Callback: Xác nhận gửi thành công
-// ============================================================
-// ESP32 Core v3.x - API mới dùng wifi_tx_info_t thay vì mac address
+// Esp gui 0x01 den cam
 void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
   if (status == ESP_NOW_SEND_SUCCESS) {
     Serial.println("ESP-NOW: Trigger sent successfully!");
@@ -93,9 +91,9 @@ void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
   }
 }
 
-// ============================================================
+// 
 // SETUP
-// ============================================================
+// 
 void setup() {
   // TẮT LOA NGAY LẬP TỨC trước khi làm gì khác
   pinMode(SPEAKER_PIN, OUTPUT);
@@ -158,9 +156,9 @@ void setup() {
   
   // Thêm ESP32-CAM làm peer
   esp_now_peer_info_t peerInfo;
-  memset(&peerInfo, 0, sizeof(peerInfo));
-  memcpy(peerInfo.peer_addr, camMacAddress, 6);
-  peerInfo.channel = 0; // Auto channel
+  memset(&peerInfo, 0, sizeof(peerInfo)); //xoa rac bo nho
+  memcpy(peerInfo.peer_addr, camMacAddress, 6);  // gán mac addr 
+  peerInfo.channel = 0; // Auto channel , 2 channel phai giong nhau
   peerInfo.encrypt = false;
   
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
@@ -183,9 +181,9 @@ void setup() {
   lcd.clear();
 }
 
-// ============================================================
+// 
 // Helper: Phát âm thanh beep (cho ACTIVE BUZZER)
-// ============================================================
+// 
 void playBeep(int dummy, int duration) {
   digitalWrite(SPEAKER_PIN, LOW);  // Đảm bảo OFF trước
   delay(10);
@@ -236,12 +234,12 @@ void playErrorSound() {
   delay(20);
 }
 
-// ============================================================
+// 
 // Helper: Parse JSON kết quả từ server
-// ============================================================
+// 
 bool parseResult(String payload, String &message) {
-  StaticJsonDocument<256> doc;
-  DeserializationError error = deserializeJson(doc, payload);
+  StaticJsonDocument<256> doc; //bo nho json cap phat tinh, 256 du de {"message":"OK","status":1}
+  DeserializationError error = deserializeJson(doc, payload); //chuyen json -> ctdl doc
   
   if (error) {
     Serial.print("JSON parse error: ");
@@ -249,7 +247,7 @@ bool parseResult(String payload, String &message) {
     return false;
   }
   
-  if (doc.containsKey("message")) {
+  if (doc.containsKey("message")) { //kiem tra json co dung cau truc mong doi k {"message":"OK","status":1}
     message = doc["message"].as<String>();
     return true;
   }
@@ -257,9 +255,9 @@ bool parseResult(String payload, String &message) {
   return false;
 }
 
-// ============================================================
+// 
 // Helper: Hiển thị kết quả + phát âm thanh thông minh
-// ============================================================
+// 
 void displayResult(String message) {
   lcd.clear();
   
@@ -324,18 +322,18 @@ void displayResult(String message) {
   Serial.println(message);
 }
 
-// ============================================================
+// 
 // MAIN LOOP với State Machine
-// ============================================================
+// 
 void loop() {
   unsigned long now = millis();
-  int currentRadarState = digitalRead(RADAR_OUT);
+  int currentRadarState = digitalRead(RADAR_OUT); //doc chan out cua rada, high co nguoi, low ko co nguoi
   
   // Debounce radar để tránh nhiễu
-  if (currentRadarState != lastRadarState) {
+  if (currentRadarState != lastRadarState) { //so sanh trang thai cua 2 thoi diem
     lastRadarChangeTime = now;
   }
-  bool radarStable = (now - lastRadarChangeTime) > RADAR_DEBOUNCE;
+  bool radarStable = (now - lastRadarChangeTime) > RADAR_DEBOUNCE; 
   lastRadarState = currentRadarState;
   
   // State Machine
@@ -359,7 +357,7 @@ void loop() {
       // Phát hiện chuyển động (CHỈ khi ở IDLE và đã qua cooldown)
       if (currentRadarState == HIGH && radarStable) {
         // Kiểm tra cooldown
-        if (now - lastTriggerTime < TRIGGER_COOLDOWN) {
+        if (now - lastTriggerTime < TRIGGER_COOLDOWN) { //cooldown khoang thoi gian cấm kích hoạt lại, 1 người đứng trước camera -> trigger liên tục -> gây treo
           // Hiển thị countdown
           unsigned long remaining = (TRIGGER_COOLDOWN - (now - lastTriggerTime)) / 1000;
           lcd.clear();

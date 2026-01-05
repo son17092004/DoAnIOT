@@ -1,20 +1,19 @@
 /*
  * ============================================================
- * ESP32-CAM - CAMERA CLIENT với ESP-NOW
+ * ESP32-CAM - CAMERA CLIENT với ESP-NOW + LIVESTREAM
  * ============================================================
- * Chức năng:
- * - Nhận trigger từ ESP32 LCD qua ESP-NOW
- * - Chụp ảnh khi nhận trigger (không còn polling!)
- * - Bật flash LED khi chụp trong môi trường tối
- * - Upload ảnh lên server qua HTTP
+ * Chức năng chính:
+ * 1. Nhận trigger từ ESP32 LCD qua ESP-NOW để chụp ảnh
+ * 2. Upload ảnh lên server backend (FastAPI) để nhận diện
+ * 3. Stream video realtime qua HTTP (MJPEG) trên port 81
+ * 4. Tự động bật flash LED khi môi trường tối
+ * 
+ * Hardware: ESP32-CAM AI Thinker
  * 
  * Files liên quan:
- * - esp32/testlcd/testlcd.ino (ESP32 LCD sender)
- * - backend/main.py (Server nhận diện)
- * 
- * Hardware:
- * - ESP32-CAM AI Thinker
- * - Flash LED: GPIO 4
+ * - backend/main.py - Server nhận diện face + anti-spoofing
+ * - backend/static/index.html - Web UI với livestream viewer
+ * - esp32/testlcd/testlcd.ino - ESP32 LCD (gửi trigger)
  * ============================================================
  */
 
@@ -22,16 +21,27 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <esp_now.h>
+#include "esp_http_server.h"
 
 // ==========================================
-// CONFIGURATION
+// CONFIGURATION - Cấu hình hệ thống
 // ==========================================
+
+// WiFi credentials
 const char* ssid = "conmeo";
 const char* password = "meomeomeo";
-const char* serverHost = "192.168.252.107";
+
+// Static IP Configuration - IP tĩnh (KHÔNG thay đổi khi restart)
+IPAddress local_IP(192, 168, 252, 200);      // IP cố định cho ESP32-CAM
+IPAddress gateway(192, 168, 252, 1);         // Gateway của router
+IPAddress subnet(255, 255, 255, 0);          // Subnet mask
+IPAddress primaryDNS(8, 8, 8, 8);            // Google DNS
+
+// Backend server
+const char* serverHost = "192.168.252.107";  // IP máy chạy backend
 const int serverPort = 8080;
 
-// Pin definition for AI THINKER Model
+// Pin definitions cho AI THINKER Model
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
 #define XCLK_GPIO_NUM     0
@@ -50,51 +60,172 @@ const int serverPort = 8080;
 #define PCLK_GPIO_NUM     22
 #define FLASH_LED_PIN     4
 
-// State
-volatile bool triggerReceived = false;
-bool cameraReady = false;
-unsigned long lastCaptureTime = 0;
-const unsigned long CAPTURE_COOLDOWN = 5000; // 5 giây cooldown giữa các lần chụp
+// State variables - Biến trạng thái
+volatile bool triggerReceived = false;       // Flag nhận trigger từ ESP-NOW
+bool cameraReady = false;                     // Camera đã sẵn sàng chưa
+unsigned long lastCaptureTime = 0;            // Thời điểm chụp ảnh cuối
+const unsigned long CAPTURE_COOLDOWN = 5000;  // Cooldown 5s giữa các lần chụp (tránh spam)
+
+// Camera Stream Server
+httpd_handle_t stream_httpd = NULL;
 
 // ============================================================
-// ESP-NOW Callback: Nhận trigger từ ESP32 LCD
+// CAMERA STREAM SERVER - HTTP Server cho livestream
 // ============================================================
-// ESP32 Core v3.x compatible
+
+/**
+ * Stream Handler - Gửi MJPEG stream (ảnh liên tiếp) đến client
+ * Format: multipart/x-mixed-replace (MJPEG standard)
+ */
+static esp_err_t stream_handler(httpd_req_t *req) {
+  camera_fb_t * fb = NULL;
+  esp_err_t res = ESP_OK;
+  size_t _jpg_buf_len = 0;
+  uint8_t * _jpg_buf = NULL;
+  char * part_buf[64];
+
+  // Set response type là MJPEG stream
+  res = httpd_resp_set_type(req, "multipart/x-mixed-replace;boundary=frame");
+  if(res != ESP_OK){
+    return res;
+  }
+
+  // Loop vô hạn - gửi frame liên tục
+  while(true){
+    // Capture 1 frame từ camera
+    fb = esp_camera_fb_get();
+    if (!fb) {
+      Serial.println("[STREAM] Camera capture failed");
+      res = ESP_FAIL;
+    } else {
+      // Nếu không phải JPEG, convert sang JPEG
+      if(fb->format != PIXFORMAT_JPEG){
+        bool jpeg_converted = frame2jpg(fb, 80, &_jpg_buf, &_jpg_buf_len);
+        esp_camera_fb_return(fb);
+        fb = NULL;
+        if(!jpeg_converted){
+          Serial.println("[STREAM] JPEG compression failed");
+          res = ESP_FAIL;
+        }
+      } else {
+        _jpg_buf_len = fb->len;
+        _jpg_buf = fb->buf;
+      }
+    }
+    
+    // Gửi JPEG frame đến client
+    if(res == ESP_OK){
+      // Gửi Content-Type header cho frame này
+      size_t hlen = snprintf((char *)part_buf, 64, 
+        "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n", _jpg_buf_len);
+      res = httpd_resp_send_chunk(req, (const char *)part_buf, hlen);
+    }
+    if(res == ESP_OK){
+      // Gửi JPEG data
+      res = httpd_resp_send_chunk(req, (const char *)_jpg_buf, _jpg_buf_len);
+    }
+    if(res == ESP_OK){
+      // Gửi boundary để phân tách các frame
+      res = httpd_resp_send_chunk(req, "\r\n--frame\r\n", 13);
+    }
+    
+    // Giải phóng memory
+    if(fb){
+      esp_camera_fb_return(fb);
+      fb = NULL;
+      _jpg_buf = NULL;
+    } else if(_jpg_buf){
+      free(_jpg_buf);
+      _jpg_buf = NULL;
+    }
+    
+    // Nếu có lỗi hoặc client disconnect, thoát loop
+    if(res != ESP_OK){
+      break;
+    }
+  }
+  return res;
+}
+
+/**
+ * Khởi động HTTP Server cho camera stream
+ * Server chạy trên port 81
+ * Endpoint: http://192.168.252.200:81/stream
+ */
+void startCameraServer(){
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.server_port = 81;  // Port 81 (tránh conflict với port 80)
+
+  // Đăng ký endpoint /stream
+  httpd_uri_t stream_uri = {
+    .uri       = "/stream",
+    .method    = HTTP_GET,
+    .handler   = stream_handler,
+    .user_ctx  = NULL
+  };
+  
+  // Khởi động server
+  if (httpd_start(&stream_httpd, &config) == ESP_OK) {
+    httpd_register_uri_handler(stream_httpd, &stream_uri);
+    Serial.println("[HTTP] Camera stream server started on port 81");
+  } else {
+    Serial.println("[HTTP] ERROR: Failed to start camera stream server!");
+  }
+}
+
+// ============================================================
+// ESP-NOW - Nhận trigger từ ESP32 LCD
+// ============================================================
+
+/**
+ * Callback được gọi khi nhận data từ ESP-NOW
+ * ESP32 LCD sẽ gửi byte 0x01 để trigger chụp ảnh
+ */
 void onDataRecv(const esp_now_recv_info *recv_info, const uint8_t *data, int len) {
-  if (len >= 1 && data[0] == 0x01) { // 0x01 = Trigger command
-    Serial.println("ESP-NOW: Trigger received from LCD!");
+  if (len >= 1 && data[0] == 0x01) {  // 0x01 = Trigger command
+    Serial.println("[ESP-NOW] Trigger received from LCD!");
     triggerReceived = true;
     
-    // Gửi ACK về ESP32 LCD (dùng src_addr từ recv_info)
-    uint8_t ack[2] = {0xAA, 0xBB}; // Header xác nhận
+    // Gửi ACK về ESP32 LCD để xác nhận đã nhận
+    uint8_t ack[2] = {0xAA, 0xBB};
     esp_now_send(recv_info->src_addr, ack, sizeof(ack));
   }
 }
 
 // ============================================================
-// SETUP
+// SETUP - Khởi tạo hệ thống
 // ============================================================
+
 void setup() {
+  // Serial Monitor
   Serial.begin(115200);
   delay(1000);
-  Serial.println("\n=== ESP32-CAM Starting ===");
+  Serial.println("\n========================================");
+  Serial.println("ESP32-CAM Starting...");
+  Serial.println("========================================");
   
-  // Flash LED
+  // Flash LED setup
   pinMode(FLASH_LED_PIN, OUTPUT);
   digitalWrite(FLASH_LED_PIN, LOW);
   
-  // Khởi tạo WiFi (STA mode cho ESP-NOW)
+  // ===== WiFi Setup với Static IP =====
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   delay(100);
   
-  // Hiển thị MAC Address (quan trọng để cấu hình ESP32 LCD)
-  Serial.print("ESP32-CAM MAC Address: ");
+  // Hiển thị MAC Address (cần cho ESP-NOW pairing)
+  Serial.print("[WiFi] MAC Address: ");
   Serial.println(WiFi.macAddress());
   
+  // Cấu hình Static IP TRƯỚC KHI connect WiFi
+  if (!WiFi.config(local_IP, gateway, subnet, primaryDNS)) {
+    Serial.println("[WiFi] ERROR: Static IP config failed!");
+  }
+  
   // Kết nối WiFi
+  Serial.print("[WiFi] Connecting to: ");
+  Serial.println(ssid);
   WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi");
   
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 40) {
@@ -104,31 +235,37 @@ void setup() {
   }
   
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi connected");
-    Serial.print("IP Address: ");
+    Serial.println("\n[WiFi] ✓ Connected!");
+    Serial.print("[WiFi] Static IP: ");
     Serial.println(WiFi.localIP());
+    Serial.print("[WiFi] Gateway: ");
+    Serial.println(WiFi.gatewayIP());
+    Serial.println("[WiFi] Stream URL: http://" + WiFi.localIP().toString() + ":81/stream");
   } else {
-    Serial.println("\nWiFi connection failed!");
-    // Có thể tiếp tục với ESP-NOW, nhưng không thể upload ảnh
+    Serial.println("\n[WiFi] ✗ Connection FAILED!");
+    // Có thể tiếp tục với ESP-NOW nhưng không thể upload/stream
   }
 
-  // Khởi tạo ESP-NOW
+  // ===== ESP-NOW Setup =====
   if (esp_now_init() != ESP_OK) {
-    Serial.println("ESP-NOW init failed!");
+    Serial.println("[ESP-NOW] ✗ Init failed!");
+    // Blink LED 3 lần nhanh để báo lỗi
     while(1) {
-      digitalWrite(FLASH_LED_PIN, HIGH);
-      delay(200);
-      digitalWrite(FLASH_LED_PIN, LOW);
-      delay(200);
+      for(int i=0; i<3; i++){
+        digitalWrite(FLASH_LED_PIN, HIGH);
+        delay(100);
+        digitalWrite(FLASH_LED_PIN, LOW);
+        delay(100);
+      }
+      delay(1000);
     }
   }
-  
-  Serial.println("ESP-NOW initialized successfully");
+  Serial.println("[ESP-NOW] ✓ Initialized");
   
   // Đăng ký callback nhận data
   esp_now_register_recv_cb(onDataRecv);
 
-  // Cấu hình camera
+  // ===== Camera Setup =====
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -151,26 +288,26 @@ void setup() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
 
-  // Cấu hình frame size dựa trên PSRAM - TĂNG TỐC
+  // Frame size tối ưu: CIF (400x296) - vừa đủ cho face recognition
   if(psramFound()){
-    config.frame_size = FRAMESIZE_CIF;  // 400x296 (tối ưu: nhỏ hơn nhưng đủ cho face recognition)
-    config.jpeg_quality = 12;           // 0-63, tăng lên 12 để giảm dung lượng
-    config.fb_count = 2;
-    Serial.println("PSRAM found - Using CIF resolution (optimized)");
+    config.frame_size = FRAMESIZE_CIF;  // 400x296 pixels
+    config.jpeg_quality = 12;            // Quality 12 (0-63, thấp hơn = tốt hơn)
+    config.fb_count = 2;                 // Double buffering
+    Serial.println("[Camera] PSRAM found - Using CIF 400x296");
   } else {
-    config.frame_size = FRAMESIZE_CIF;  // 400x296 (an toàn cho cả không PSRAM)
+    config.frame_size = FRAMESIZE_CIF;
     config.jpeg_quality = 15;
     config.fb_count = 1;
-    Serial.println("No PSRAM - Using CIF resolution (optimized)");
+    Serial.println("[Camera] No PSRAM - Using CIF 400x296");
   }
 
   // Khởi tạo camera
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("Camera init failed with error 0x%x\n", err);
+    Serial.printf("[Camera] ✗ Init failed: 0x%x\n", err);
     cameraReady = false;
     
-    // Blink LED để báo lỗi
+    // Blink LED liên tục để báo lỗi camera
     while(1) {
       for(int i = 0; i < 3; i++) {
         digitalWrite(FLASH_LED_PIN, HIGH);
@@ -182,85 +319,85 @@ void setup() {
     }
   }
   
-  Serial.println("Camera initialized successfully!");
+  Serial.println("[Camera] ✓ Initialized successfully");
   cameraReady = true;
   
-  // Cải thiện chất lượng ảnh
+  // Cải thiện chất lượng ảnh với sensor settings
   sensor_t * s = esp_camera_sensor_get();
   if (s != NULL) {
     s->set_brightness(s, 0);     // -2 to 2
     s->set_contrast(s, 0);       // -2 to 2
     s->set_saturation(s, 0);     // -2 to 2
-    s->set_sharpness(s, 0);      // -2 to 2
-    s->set_whitebal(s, 1);       // 0 = disable , 1 = enable
-    s->set_awb_gain(s, 1);       // 0 = disable , 1 = enable
-    s->set_wb_mode(s, 0);        // 0 to 4 - if awb_gain enabled
-    s->set_exposure_ctrl(s, 1);  // 0 = disable , 1 = enable
-    s->set_aec2(s, 0);           // 0 = disable , 1 = enable
-    s->set_ae_level(s, 0);       // -2 to 2
-    s->set_gain_ctrl(s, 1);      // 0 = disable , 1 = enable
-    s->set_agc_gain(s, 0);       // 0 to 30
-    s->set_gainceiling(s, (gainceiling_t)0);  // 0 to 6
-    s->set_bpc(s, 0);            // 0 = disable , 1 = enable
-    s->set_wpc(s, 1);            // 0 = disable , 1 = enable
-    s->set_raw_gma(s, 1);        // 0 = disable , 1 = enable
-    s->set_lenc(s, 1);           // 0 = disable , 1 = enable
-    s->set_hmirror(s, 0);        // 0 = disable , 1 = enable
-    s->set_vflip(s, 0);          // 0 = disable , 1 = enable
+    s->set_whitebal(s, 1);       // Auto white balance
+    s->set_awb_gain(s, 1);       // Auto white balance gain
+    s->set_exposure_ctrl(s, 1);  // Auto exposure
+    s->set_gain_ctrl(s, 1);      // Auto gain
+    s->set_hmirror(s, 0);        // Horizontal mirror: 0=off, 1=on
+    s->set_vflip(s, 0);          // Vertical flip: 0=off, 1=on
   }
   
-  Serial.println("=== System Ready - Waiting for ESP-NOW trigger ===");
+  // ===== Start Camera Stream Server =====
+  startCameraServer();
   
-  // Blink LED để báo sẵn sàng
+  // Blink LED 2 lần để báo sẵn sàng
+  Serial.println("========================================");
+  Serial.println("✓ System Ready!");
+  Serial.println("✓ Waiting for ESP-NOW trigger...");
+  Serial.println("========================================");
+  
   for(int i = 0; i < 2; i++) {
     digitalWrite(FLASH_LED_PIN, HIGH);
-    delay(100);
+    delay(150);
     digitalWrite(FLASH_LED_PIN, LOW);
-    delay(100);
+    delay(150);
   }
 }
 
 // ============================================================
 // MAIN LOOP
 // ============================================================
+
 void loop() {
-  // Chỉ chụp ảnh khi:
-  // 1. Nhận được trigger từ ESP-NOW
-  // 2. Camera ready
-  // 3. Đã qua thời gian cooldown (tránh spam)
+  // Kiểm tra điều kiện chụp ảnh:
+  // 1. Có trigger từ ESP-NOW
+  // 2. Camera sẵn sàng
+  // 3. Đã hết thời gian cooldown (tránh spam)
   
   if (triggerReceived && cameraReady) {
     unsigned long now = millis();
     
-    // Kiểm tra cooldown
+    // Check cooldown
     if (now - lastCaptureTime >= CAPTURE_COOLDOWN) {
-      triggerReceived = false; // Reset flag
-      lastCaptureTime = now;   // Cập nhật thời gian
+      triggerReceived = false;  // Reset flag
+      lastCaptureTime = now;    // Update thời gian
       
-      Serial.println("=== Processing trigger ===");
-      captureAndUpload();
+      Serial.println("\n[TRIGGER] Processing...");
+      captureAndUpload();  // Chụp và upload ảnh
     } else {
-      // Còn trong cooldown period
-      triggerReceived = false; // Reset flag nhưng không chụp
+      // Còn trong cooldown
+      triggerReceived = false;
       unsigned long remaining = (CAPTURE_COOLDOWN - (now - lastCaptureTime)) / 1000;
-      Serial.printf("Cooldown active, wait %lu more seconds\n", remaining);
+      Serial.printf("[TRIGGER] Cooldown active, wait %lu more seconds\n", remaining);
     }
   }
   
-  // ESP-NOW callback xử lý trigger, không cần polling
-  delay(5);  // Giảm CPU usage (tối ưu: 10ms → 5ms)
+  delay(5);  // Giảm CPU usage
 }
 
 // ============================================================
-// Helper: Kiểm tra độ sáng ảnh
+// HELPER FUNCTIONS
 // ============================================================
+
+/**
+ * Kiểm tra độ sáng ảnh bằng cách lấy mẫu 100 pixel
+ * Return: true nếu ảnh tối (cần bật flash)
+ */
 bool isImageDark(camera_fb_t *fb) {
   if (!fb || fb->len == 0) return false;
   
-  // Lấy mẫu 100 pixel từ ảnh để tính độ sáng trung bình
   uint32_t brightness = 0;
   int sampleCount = 0;
-  int step = fb->len / 100; // Lấy mẫu 100 điểm
+  int step = fb->len / 100;  // Lấy mẫu 100 điểm đều nhau
   
   for (size_t i = 0; i < fb->len && sampleCount < 100; i += step) {
     brightness += fb->buf[i];
@@ -268,62 +405,66 @@ bool isImageDark(camera_fb_t *fb) {
   }
   
   uint8_t avgBrightness = brightness / sampleCount;
-  Serial.printf("Average brightness: %d\n", avgBrightness);
+  Serial.printf("[Camera] Average brightness: %d/255\n", avgBrightness);
   
-  return avgBrightness < 60; // Threshold: dưới 60 = tối
+  return avgBrightness < 60;  // Threshold: <60 = tối
 }
 
-// ============================================================
-// Chụp ảnh và upload lên server
-// ============================================================
+/**
+ * Chụp ảnh và upload lên backend server
+ * - Tự động bật flash nếu môi trường tối
+ * - Upload qua HTTP POST multipart/form-data
+ * - Server sẽ nhận diện khuôn mặt và điểm danh
+ */
 void captureAndUpload() {
   unsigned long startTime = millis();
   
-  // Thử chụp ảnh lần đầu
+  // Chụp ảnh lần đầu để kiểm tra độ sáng
   camera_fb_t * fb = esp_camera_fb_get();
   if(!fb) {
-    Serial.println("Camera capture failed!");
+    Serial.println("[Camera] ✗ Capture failed!");
     return;
   }
   
-  // Kiểm tra độ sáng, nếu tối thì bật flash và chụp lại
+  // Kiểm tra độ sáng
   bool needFlash = isImageDark(fb);
   
   if (needFlash) {
-    Serial.println("Image too dark, retaking with flash...");
+    Serial.println("[Camera] Image too dark, retaking with flash...");
     
-    // Trả về buffer ảnh cũ
+    // Trả buffer cũ
     esp_camera_fb_return(fb);
     
     // Bật flash
     digitalWrite(FLASH_LED_PIN, HIGH);
-    delay(100); // Chờ flash ổn định (tối ưu: giảm từ 200ms xuống 100ms)
+    delay(100);  // Chờ flash ổn định
     
-    // Chụp lại
+    // Chụp lại với flash
     fb = esp_camera_fb_get();
     
     // Tắt flash
     digitalWrite(FLASH_LED_PIN, LOW);
     
     if(!fb) {
-      Serial.println("Camera capture with flash failed!");
+      Serial.println("[Camera] ✗ Capture with flash failed!");
       return;
     }
   }
   
-  Serial.printf("Image captured: %d bytes in %lu ms\n", fb->len, millis() - startTime);
+  Serial.printf("[Camera] ✓ Captured: %d bytes in %lu ms\n", fb->len, millis() - startTime);
   
-  // Upload lên server
+  // ===== Upload lên server =====
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi not connected! Cannot upload.");
+    Serial.println("[Upload] ✗ WiFi not connected!");
     esp_camera_fb_return(fb);
     return;
   }
   
   WiFiClient client;
   if (client.connect(serverHost, serverPort)) {
-    Serial.println("Uploading to server...");
+    Serial.println("[Upload] Uploading to server...");
     
+    // HTTP multipart/form-data boundary
     String boundary = "----ESP32CAMBoundary1234567890";
     String head = "--" + boundary + "\r\n";
     head += "Content-Disposition: form-data; name=\"file\"; filename=\"cam.jpg\"\r\n";
@@ -332,7 +473,7 @@ void captureAndUpload() {
     
     uint32_t totalLen = head.length() + fb->len + tail.length();
     
-    // HTTP Headers
+    // HTTP Request Headers
     client.println("POST /api/recognize HTTP/1.1");
     client.println("Host: " + String(serverHost));
     client.println("Content-Length: " + String(totalLen));
@@ -340,33 +481,33 @@ void captureAndUpload() {
     client.println("Connection: close");
     client.println();
     
-    // Body
+    // HTTP Request Body
     client.print(head);
     
-    // Gửi image data theo chunks (TĂNG TỐC)
+    // Gửi image data theo chunks (2KB mỗi lần)
     uint8_t *fbBuf = fb->buf;
     size_t fbLen = fb->len;
-    size_t chunkSize = 2048;  // Tăng từ 1024 → 2048 bytes (upload nhanh hơn)
+    size_t chunkSize = 2048;
     
     for (size_t i = 0; i < fbLen; i += chunkSize) {
       size_t toSend = (fbLen - i < chunkSize) ? (fbLen - i) : chunkSize;
       size_t sent = client.write(fbBuf + i, toSend);
       
       if (sent != toSend) {
-        Serial.println("Upload failed: connection error");
+        Serial.println("[Upload] ✗ Connection error!");
         break;
       }
     }
     
     client.print(tail);
     
-    // Đọc response từ server (TĂNG TỐC)
-    Serial.println("Waiting for server response...");
+    // Đọc response từ server
+    Serial.println("[Upload] Waiting for server response...");
     unsigned long timeout = millis();
     bool headersPassed = false;
     String response = "";
     
-    while (client.connected() && millis() - timeout < 8000) {  // Giảm từ 10s → 8s
+    while (client.connected() && millis() - timeout < 8000) {
       if (client.available()) {
         String line = client.readStringUntil('\n');
         
@@ -374,27 +515,27 @@ void captureAndUpload() {
           if (line == "\r") {
             headersPassed = true;
           } else if (line.startsWith("HTTP/1.1")) {
-            Serial.println("Server response: " + line);
+            Serial.println("[Server] " + line);
           }
         } else {
           response += line;
         }
         
-        timeout = millis(); // Reset timeout khi nhận data
+        timeout = millis();
       }
     }
     
     if (response.length() > 0) {
-      Serial.println("Response body: " + response);
+      Serial.println("[Server] Response: " + response);
     }
     
     client.stop();
-    Serial.printf("Upload completed in %lu ms\n", millis() - startTime);
+    Serial.printf("[Upload] ✓ Completed in %lu ms\n", millis() - startTime);
     
   } else {
-    Serial.println("Failed to connect to server!");
+    Serial.println("[Upload] ✗ Failed to connect to server!");
   }
   
-  // Giải phóng buffer
+  // Giải phóng memory
   esp_camera_fb_return(fb);
 }

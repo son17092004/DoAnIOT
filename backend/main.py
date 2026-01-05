@@ -89,6 +89,9 @@ ANTISPOOF_MODEL = None
 BASE_DIR = Path(__file__).resolve().parent.parent
 MODEL_PATH = BASE_DIR / "training_anti_spoof" / "antispoof_model.pth"
 
+# Anti-Spoof Toggle - Cờ bật/tắt chống giả mạo
+ANTI_SPOOF_ENABLED = True  # Mặc định BẬT
+
 # Recognition Result (for ESP32 LCD to poll)
 RECOGNITION_LOCK = threading.Lock()
 LAST_RECOGNITION_RESULT = {"timestamp": 0, "message": "Ready"}
@@ -533,6 +536,40 @@ def api_mark_spoof_reviewed(spoof_id: str):
 
 
 # ===================================
+# ANTI-SPOOF TOGGLE - Bật/Tắt chống giả mạo
+# ===================================
+
+@app.get("/api/anti-spoof/status")
+def api_get_anti_spoof_status():
+    """Lấy trạng thái hiện tại của chức năng chống giả mạo"""
+    global ANTI_SPOOF_ENABLED
+    return {
+        "status": "success",
+        "enabled": ANTI_SPOOF_ENABLED,
+        "message": "BẬT" if ANTI_SPOOF_ENABLED else "TẮT"
+    }
+
+
+@app.post("/api/anti-spoof/toggle")
+def api_toggle_anti_spoof(request: dict):
+    """Bật/tắt chống giả mạo trong quá trình điểm danh"""
+    global ANTI_SPOOF_ENABLED
+    ANTI_SPOOF_ENABLED = request.get("enabled", True)
+    
+    status_text = "BẬT" if ANTI_SPOOF_ENABLED else "TẮT"
+    
+    print(f"\n{'='*60}")
+    print(f"⚙️  CHỐNG GIẢ MẠO: {status_text}")
+    print(f"{'='*60}\n")
+    
+    return {
+        "status": "success",
+        "enabled": ANTI_SPOOF_ENABLED,
+        "message": f"Đã {status_text} chống giả mạo"
+    }
+
+
+# ===================================
 # FACE RECOGNITION (ESP32)
 # ===================================
 
@@ -542,7 +579,7 @@ async def api_recognize_face(file: UploadFile = File(...)):
     Endpoint nhận ảnh từ ESP32-CAM và nhận diện khuôn mặt
     Tự động điểm danh nếu có session active
     """
-    global CURRENT_SESSION_ID, ANTISPOOF_MODEL, LAST_RECOGNITION_RESULT
+    global CURRENT_SESSION_ID, ANTISPOOF_MODEL, ANTI_SPOOF_ENABLED, LAST_RECOGNITION_RESULT
     
     # Kiểm tra có session active không
     if not CURRENT_SESSION_ID:
@@ -589,8 +626,8 @@ async def api_recognize_face(file: UploadFile = File(...)):
     top, right, bottom, left = face_locations[0]
     face_img = img[top:bottom, left:right]
     
-    # Anti-Spoofing check
-    if ANTISPOOF_MODEL:
+    # Anti-Spoofing check (chỉ khi BẬT)
+    if ANTI_SPOOF_ENABLED and ANTISPOOF_MODEL:
         is_real, confidence = check_liveness(face_img, ANTISPOOF_MODEL, face_locations[0])
         print(f"Anti-spoofing: is_real={is_real}, confidence={confidence:.3f}")
         
@@ -616,6 +653,8 @@ async def api_recognize_face(file: UploadFile = File(...)):
                 status_code=200,
                 content={"status": "failed", "message": "GIA MAO", "confidence": confidence}
             )
+    elif not ANTI_SPOOF_ENABLED:
+        print("⚠️ Anti-spoofing DISABLED - Skipping liveness check")
     
     # Align & extract embedding
     landmarks = get_face_landmarks(img)
@@ -757,6 +796,75 @@ def api_get_latest_result():
     """
     with RECOGNITION_LOCK:
         return LAST_RECOGNITION_RESULT
+
+
+@app.get("/api/images/all")
+def api_get_all_images():
+    """
+    Lấy tất cả ảnh đã chụp (attendance + spoof)
+    Để hiển thị gallery và so sánh
+    """
+    all_images = []
+    
+    # Lấy ảnh attendance (thành công)
+    attendance_dir = "images/attendance"
+    if os.path.exists(attendance_dir):
+        for filename in os.listdir(attendance_dir):
+            if filename.endswith(('.jpg', '.jpeg', '.png')):
+                filepath = os.path.join(attendance_dir, filename)
+                stat = os.stat(filepath)
+                
+                # Parse filename: {student_id}_{timestamp}.jpg
+                try:
+                    parts = filename.replace('.jpg', '').split('_')
+                    student_id = parts[0]
+                    timestamp_str = '_'.join(parts[1:3])  # YYYYMMDD_HHMMSS
+                    dt = datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
+                except:
+                    dt = datetime.fromtimestamp(stat.st_mtime)
+                    student_id = "Unknown"
+                
+                all_images.append({
+                    "filename": filename,
+                    "url": f"/{attendance_dir}/{filename}",
+                    "type": "success",
+                    "timestamp": dt.isoformat(),
+                    "student_id": student_id,
+                    "size": stat.st_size
+                })
+    
+    # Lấy ảnh spoof (giả mạo)
+    spoof_dir = "images/spoof"
+    if os.path.exists(spoof_dir):
+        for filename in os.listdir(spoof_dir):
+            if filename.endswith(('.jpg', '.jpeg', '.png')):
+                filepath = os.path.join(spoof_dir, filename)
+                stat = os.stat(filepath)
+                
+                # Parse filename: SPOOF_{timestamp}.jpg
+                try:
+                    timestamp_str = filename.replace('SPOOF_', '').replace('.jpg', '')
+                    dt = datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
+                except:
+                    dt = datetime.fromtimestamp(stat.st_mtime)
+                
+                all_images.append({
+                    "filename": filename,
+                    "url": f"/{spoof_dir}/{filename}",
+                    "type": "spoof",
+                    "timestamp": dt.isoformat(),
+                    "student_id": None,
+                    "size": stat.st_size
+                })
+    
+    # Sắp xếp theo thời gian (mới nhất trước)
+    all_images.sort(key=lambda x: x['timestamp'], reverse=True)
+    
+    return {
+        "status": "success",
+        "total": len(all_images),
+        "images": all_images
+    }
 
 
 # ===================================

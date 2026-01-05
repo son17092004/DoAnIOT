@@ -128,7 +128,7 @@ def load_antispoof_model(model_path):
         print(f"Error loading model: {e}")
         return None
 
-def check_liveness(image_np, model, face_location=None, threshold=0.5):
+def check_liveness(image_np, model, face_location=None, threshold=0.2):
     """
     Checks if a face is Real or Spoof.
     Returns:
