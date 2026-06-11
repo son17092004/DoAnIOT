@@ -1,0 +1,1276 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hệ Thống Điểm Danh IoT</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #3b82f6;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --dark: #1e293b;
+            --light: #f1f5f9;
+            --border: #e2e8f0;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            padding: 20px 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            color: var(--dark);
+            font-size: 24px;
+        }
+
+        .header .status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--success);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .tab-btn {
+            background: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .tab-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+
+        .tab-btn.active {
+            background: var(--primary);
+            color: white;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .card {
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        .card h2 {
+            color: var(--dark);
+            margin-bottom: 16px;
+            font-size: 20px;
+            border-bottom: 2px solid var(--border);
+            padding-bottom: 8px;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 6px;
+            font-weight: 600;
+            color: var(--dark);
+            font-size: 14px;
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(59,130,246,0.1);
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #2563eb;
+        }
+
+        .btn-success {
+            background: var(--success);
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #059669;
+        }
+
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        .btn-warning {
+            background: var(--warning);
+            color: white;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .table-container {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        table th,
+        table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        table th {
+            background: var(--light);
+            font-weight: 600;
+            color: var(--dark);
+        }
+
+        table tr:hover {
+            background: var(--light);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .badge-success {
+            background: #d1fae5;
+            color: var(--success);
+        }
+
+        .badge-danger {
+            background: #fee2e2;
+            color: var(--danger);
+        }
+
+        .badge-warning {
+            background: #fef3c7;
+            color: #d97706;
+        }
+
+        .badge-primary {
+            background: #dbeafe;
+            color: var(--primary);
+        }
+
+        .grid {
+            display: grid;
+            gap: 20px;
+        }
+
+        .grid-2 {
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        }
+
+        .alert {
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+            font-size: 14px;
+        }
+
+        .alert-success {
+            background: #d1fae5;
+            color: var(--success);
+            border-left: 4px solid var(--success);
+        }
+
+        .alert-danger {
+            background: #fee2e2;
+            color: var(--danger);
+            border-left: 4px solid var(--danger);
+        }
+
+        .alert-warning {
+            background: #fef3c7;
+            color: #d97706;
+            border-left: 4px solid var(--warning);
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, var(--primary) 0%, #2563eb 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        .stat-card h3 {
+            font-size: 32px;
+            margin-bottom: 8px;
+        }
+
+        .stat-card p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        .file-upload {
+            border: 2px dashed var(--border);
+            border-radius: 8px;
+            padding: 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .file-upload:hover {
+            border-color: var(--primary);
+            background: #f8fafc;
+        }
+
+        .file-upload input {
+            display: none;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            max-width: 500px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .modal-header h3 {
+            color: var(--dark);
+        }
+
+        .close-btn {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: #64748b;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid var(--primary);
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            margin-left: 8px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .attendance-status {
+            display: flex;
+            gap: 24px;
+            margin-bottom: 20px;
+        }
+
+        .session-info {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            color: white;
+            padding: 16px 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .session-info.inactive {
+            background: linear-gradient(135deg, #64748b 0%, #475569 100%);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🎓 Hệ Thống Điểm Danh IoT</h1>
+            <div class="status">
+                <div class="status-dot"></div>
+                <span>Hệ thống hoạt động</span>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab-btn active" onclick="switchTab('students')">👨‍🎓 Sinh viên</button>
+            <button class="tab-btn" onclick="switchTab('classes')">📚 Lớp học</button>
+            <button class="tab-btn" onclick="switchTab('attendance')">✅ Điểm danh</button>
+            <button class="tab-btn" onclick="switchTab('reports')">📊 Báo cáo</button>
+        </div>
+
+        <!-- Tab: Sinh viên -->
+        <div id="students-tab" class="tab-content active">
+            <div class="grid grid-2">
+                <div class="card">
+                    <h2>Thêm sinh viên mới</h2>
+                    <div class="form-group">
+                        <label>Họ và tên</label>
+                        <input type="text" id="student-name" placeholder="Nguyễn Văn A">
+                    </div>
+                    <div class="form-group">
+                        <label>Mã sinh viên</label>
+                        <input type="text" id="student-id" placeholder="B2012345">
+                    </div>
+                    <div class="form-group">
+                        <label>Email (tùy chọn)</label>
+                        <input type="email" id="student-email" placeholder="student@example.com">
+                    </div>
+                    <div class="form-group">
+                        <label>Số điện thoại (tùy chọn)</label>
+                        <input type="tel" id="student-phone" placeholder="0123456789">
+                    </div>
+                    <button class="btn btn-primary" onclick="createStudent()">Tạo sinh viên</button>
+                </div>
+
+                <div class="card">
+                    <h2>Thêm ảnh khuôn mặt</h2>
+                    <div class="alert alert-warning">
+                        ⚠️ Khuyến nghị: Upload 3-5 ảnh với các góc độ khác nhau để tăng độ chính xác
+                    </div>
+                    <div class="form-group">
+                        <label>Chọn sinh viên</label>
+                        <select id="photo-student-select">
+                            <option value="">-- Chọn sinh viên --</option>
+                        </select>
+                    </div>
+                    <div class="file-upload" onclick="document.getElementById('student-photo').click()">
+                        <input type="file" id="student-photo" accept="image/*" onchange="uploadPhoto()">
+                        <p>📷 Click để chọn ảnh</p>
+                        <small>Định dạng: JPG, PNG</small>
+                    </div>
+                    <div id="photo-status"></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Danh sách sinh viên</h2>
+                <div class="table-container">
+                    <table id="students-table">
+                        <thead>
+                            <tr>
+                                <th>Mã SV</th>
+                                <th>Họ tên</th>
+                                <th>Email</th>
+                                <th>Số ảnh</th>
+                                <th>Hành động</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab: Lớp học -->
+        <div id="classes-tab" class="tab-content">
+            <div class="grid grid-2">
+                <div class="card">
+                    <h2>Tạo lớp học mới</h2>
+                    <div class="form-group">
+                        <label>Tên lớp học</label>
+                        <input type="text" id="class-name" placeholder="Lập trình IoT">
+                    </div>
+                    <div class="form-group">
+                        <label>Mã lớp</label>
+                        <input type="text" id="class-code" placeholder="IOT2024">
+                    </div>
+                    <div class="form-group">
+                        <label>Giảng viên (tùy chọn)</label>
+                        <input type="text" id="class-teacher" placeholder="TS. Nguyễn Văn B">
+                    </div>
+                    <div class="form-group">
+                        <label>Mô tả (tùy chọn)</label>
+                        <textarea id="class-description" rows="3" placeholder="Mô tả về lớp học..."></textarea>
+                    </div>
+                    <button class="btn btn-primary" onclick="createClass()">Tạo lớp học</button>
+                </div>
+
+                <div class="card">
+                    <h2>Thêm sinh viên vào lớp</h2>
+                    <div class="form-group">
+                        <label>Chọn lớp</label>
+                        <select id="add-student-class-select">
+                            <option value="">-- Chọn lớp --</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Chọn sinh viên</label>
+                        <select id="add-student-select">
+                            <option value="">-- Chọn sinh viên --</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-success" onclick="addStudentToClass()">Thêm vào lớp</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Danh sách lớp học</h2>
+                <div class="table-container">
+                    <table id="classes-table">
+                        <thead>
+                            <tr>
+                                <th>Mã lớp</th>
+                                <th>Tên lớp</th>
+                                <th>Giảng viên</th>
+                                <th>Số SV</th>
+                                <th>Hành động</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab: Điểm danh -->
+        <div id="attendance-tab" class="tab-content">
+            <div id="session-status" class="session-info inactive">
+                <div>
+                    <strong>Trạng thái:</strong> Chưa bắt đầu
+                </div>
+                <div>
+                    <button class="btn btn-success" onclick="showStartSessionModal()">Bắt đầu điểm danh</button>
+                </div>
+            </div>
+
+            <div class="grid grid-2">
+                <div class="card">
+                    <h2>Thống kê</h2>
+                    <div id="attendance-stats">
+                        <p>Chưa có phiên điểm danh</p>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Sinh viên đã điểm danh</h2>
+                    <div id="attended-list">
+                        <p>Chưa có dữ liệu</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab: Báo cáo -->
+        <div id="reports-tab" class="tab-content">
+            <div class="card">
+                <h2>Lịch sử điểm danh</h2>
+                <div class="form-group">
+                    <label>Chọn lớp</label>
+                    <select id="report-class-select" onchange="loadClassSessions()">
+                        <option value="">-- Chọn lớp --</option>
+                    </select>
+                </div>
+                <div id="sessions-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Start Session -->
+    <div id="start-session-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Bắt đầu điểm danh</h3>
+                <button class="close-btn" onclick="closeModal('start-session-modal')">&times;</button>
+            </div>
+            <div class="form-group">
+                <label>Chọn lớp</label>
+                <select id="session-class-select">
+                    <option value="">-- Chọn lớp --</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Tên phiên</label>
+                <input type="text" id="session-name" placeholder="Buổi 1 - Ngày 04/01/2026">
+            </div>
+            <button class="btn btn-success" onclick="startSession()">Bắt đầu</button>
+        </div>
+    </div>
+
+    <!-- Modal: Class Students -->
+    <div id="class-students-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-class-title">Danh sách sinh viên</h3>
+                <button class="close-btn" onclick="closeModal('class-students-modal')">&times;</button>
+            </div>
+            <div id="modal-students-list"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = window.location.origin;
+
+        // ===================================
+        // TAB SWITCHING
+        // ===================================
+        function switchTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+
+            // Show selected tab
+            document.getElementById(tabName + '-tab').classList.add('active');
+            event.target.classList.add('active');
+
+            // Load data for selected tab
+            if (tabName === 'students') {
+                loadStudents();
+                loadStudentsForSelect();
+            } else if (tabName === 'classes') {
+                loadClasses();
+                loadClassesForSelect();
+                loadStudentsForSelect();
+            } else if (tabName === 'attendance') {
+                checkSessionStatus();
+            } else if (tabName === 'reports') {
+                loadClassesForReport();
+            }
+        }
+
+        // ===================================
+        // STUDENTS
+        // ===================================
+        async function createStudent() {
+            const name = document.getElementById('student-name').value;
+            const studentId = document.getElementById('student-id').value;
+            const email = document.getElementById('student-email').value;
+            const phone = document.getElementById('student-phone').value;
+
+            if (!name || !studentId) {
+                alert('Vui lòng nhập đầy đủ họ tên và mã sinh viên!');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/students/create`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({name, student_id: studentId, email, phone})
+                });
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    alert('✓ Đã tạo sinh viên thành công!');
+                    document.getElementById('student-name').value = '';
+                    document.getElementById('student-id').value = '';
+                    document.getElementById('student-email').value = '';
+                    document.getElementById('student-phone').value = '';
+                    loadStudents();
+                    loadStudentsForSelect();
+                } else {
+                    alert('✗ Lỗi: ' + data.detail);
+                }
+            } catch (error) {
+                alert('✗ Lỗi kết nối: ' + error.message);
+            }
+        }
+
+        async function loadStudents() {
+            try {
+                const response = await fetch(`${API_URL}/api/students`);
+                const data = await response.json();
+
+                const tbody = document.querySelector('#students-table tbody');
+                tbody.innerHTML = '';
+
+                data.students.forEach(student => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${student.student_id}</td>
+                        <td>${student.name}</td>
+                        <td>${student.email || '-'}</td>
+                        <td><span class="badge badge-primary">${student.num_embeddings} ảnh</span></td>
+                        <td>
+                            <button class="btn btn-danger" onclick="deleteStudent('${student.student_id}')">Xóa</button>
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (error) {
+                console.error('Error loading students:', error);
+            }
+        }
+
+        async function loadStudentsForSelect() {
+            try {
+                const response = await fetch(`${API_URL}/api/students`);
+                const data = await response.json();
+
+                const selects = [
+                    document.getElementById('photo-student-select'),
+                    document.getElementById('add-student-select')
+                ];
+
+                selects.forEach(select => {
+                    select.innerHTML = '<option value="">-- Chọn sinh viên --</option>';
+                    data.students.forEach(student => {
+                        const option = document.createElement('option');
+                        option.value = student.student_id;
+                        option.textContent = `${student.name} (${student.student_id})`;
+                        select.appendChild(option);
+                    });
+                });
+            } catch (error) {
+                console.error('Error loading students for select:', error);
+            }
+        }
+
+        async function uploadPhoto() {
+            const studentId = document.getElementById('photo-student-select').value;
+            const fileInput = document.getElementById('student-photo');
+            const file = fileInput.files[0];
+
+            if (!studentId) {
+                alert('Vui lòng chọn sinh viên!');
+                return;
+            }
+
+            if (!file) {
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const statusDiv = document.getElementById('photo-status');
+            statusDiv.innerHTML = '<div class="spinner"></div> Đang xử lý...';
+
+            try {
+                const response = await fetch(`${API_URL}/api/students/${studentId}/add-photo`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    statusDiv.innerHTML = `<div class="alert alert-success">✓ ${data.message}</div>`;
+                    fileInput.value = '';
+                    loadStudents();
+                } else {
+                    statusDiv.innerHTML = `<div class="alert alert-danger">✗ ${data.detail}</div>`;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `<div class="alert alert-danger">✗ Lỗi: ${error.message}</div>`;
+            }
+        }
+
+        async function deleteStudent(studentId) {
+            if (!confirm('Bạn có chắc muốn xóa sinh viên này?')) return;
+
+            try {
+                const response = await fetch(`${API_URL}/api/students/${studentId}`, {
+                    method: 'DELETE'
+                });
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    alert('✓ Đã xóa sinh viên');
+                    loadStudents();
+                    loadStudentsForSelect();
+                } else {
+                    alert('✗ Lỗi: ' + data.detail);
+                }
+            } catch (error) {
+                alert('✗ Lỗi: ' + error.message);
+            }
+        }
+
+        // ===================================
+        // CLASSES
+        // ===================================
+        async function createClass() {
+            const className = document.getElementById('class-name').value;
+            const classCode = document.getElementById('class-code').value;
+            const teacher = document.getElementById('class-teacher').value;
+            const description = document.getElementById('class-description').value;
+
+            if (!className || !classCode) {
+                alert('Vui lòng nhập tên lớp và mã lớp!');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/classes/create`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({class_name: className, class_code: classCode, teacher, description})
+                });
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    alert('✓ Đã tạo lớp học thành công!');
+                    document.getElementById('class-name').value = '';
+                    document.getElementById('class-code').value = '';
+                    document.getElementById('class-teacher').value = '';
+                    document.getElementById('class-description').value = '';
+                    loadClasses();
+                    loadClassesForSelect();
+                } else {
+                    alert('✗ Lỗi: ' + data.detail);
+                }
+            } catch (error) {
+                alert('✗ Lỗi: ' + error.message);
+            }
+        }
+
+        async function loadClasses() {
+            try {
+                const response = await fetch(`${API_URL}/api/classes`);
+                const data = await response.json();
+
+                const tbody = document.querySelector('#classes-table tbody');
+                tbody.innerHTML = '';
+
+                data.classes.forEach(cls => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${cls.class_code}</td>
+                        <td>${cls.class_name}</td>
+                        <td>${cls.teacher || '-'}</td>
+                        <td><span class="badge badge-primary">${cls.student_count} SV</span></td>
+                        <td>
+                            <button class="btn btn-primary" onclick="viewClassStudents('${cls._id}', '${cls.class_name}')">Xem SV</button>
+                            <button class="btn btn-danger" onclick="deleteClass('${cls._id}')">Xóa</button>
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (error) {
+                console.error('Error loading classes:', error);
+            }
+        }
+
+        async function loadClassesForSelect() {
+            try {
+                const response = await fetch(`${API_URL}/api/classes`);
+                const data = await response.json();
+
+                const selects = [
+                    document.getElementById('add-student-class-select'),
+                    document.getElementById('session-class-select')
+                ];
+
+                selects.forEach(select => {
+                    select.innerHTML = '<option value="">-- Chọn lớp --</option>';
+                    data.classes.forEach(cls => {
+                        const option = document.createElement('option');
+                        option.value = cls._id;
+                        option.textContent = `${cls.class_name} (${cls.class_code})`;
+                        select.appendChild(option);
+                    });
+                });
+            } catch (error) {
+                console.error('Error loading classes for select:', error);
+            }
+        }
+
+        async function loadClassesForReport() {
+            try {
+                const response = await fetch(`${API_URL}/api/classes`);
+                const data = await response.json();
+
+                const select = document.getElementById('report-class-select');
+                select.innerHTML = '<option value="">-- Chọn lớp --</option>';
+                data.classes.forEach(cls => {
+                    const option = document.createElement('option');
+                    option.value = cls._id;
+                    option.textContent = `${cls.class_name} (${cls.class_code})`;
+                    select.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Error loading classes for report:', error);
+            }
+        }
+
+        async function addStudentToClass() {
+            const classId = document.getElementById('add-student-class-select').value;
+            const studentId = document.getElementById('add-student-select').value;
+
+            if (!classId || !studentId) {
+                alert('Vui lòng chọn lớp và sinh viên!');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/classes/${classId}/students/${studentId}`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    alert('✓ Đã thêm sinh viên vào lớp!');
+                    loadClasses();
+                } else {
+                    alert('✗ Lỗi: ' + data.detail);
+                }
+            } catch (error) {
+                alert('✗ Lỗi: ' + error.message);
+            }
+        }
+
+        async function viewClassStudents(classId, className) {
+            try {
+                const response = await fetch(`${API_URL}/api/classes/${classId}/students`);
+                const data = await response.json();
+
+                document.getElementById('modal-class-title').textContent = `Lớp: ${className}`;
+                const listDiv = document.getElementById('modal-students-list');
+                
+                if (data.students.length === 0) {
+                    listDiv.innerHTML = '<p>Chưa có sinh viên nào</p>';
+                } else {
+                    let html = '<table style="width:100%"><thead><tr><th>Mã SV</th><th>Họ tên</th><th>Hành động</th></tr></thead><tbody>';
+                    data.students.forEach(student => {
+                        html += `
+                            <tr>
+                                <td>${student.student_id}</td>
+                                <td>${student.name}</td>
+                                <td><button class="btn btn-danger" onclick="removeStudentFromClass('${classId}', '${student.student_id}')">Xóa</button></td>
+                            </tr>
+                        `;
+                    });
+                    html += '</tbody></table>';
+                    listDiv.innerHTML = html;
+                }
+
+                document.getElementById('class-students-modal').classList.add('active');
+            } catch (error) {
+                alert('✗ Lỗi: ' + error.message);
+            }
+        }
+
+        async function removeStudentFromClass(classId, studentId) {
+            if (!confirm('Bạn có chắc muốn xóa sinh viên khỏi lớp?')) return;
+
+            try {
+                const response = await fetch(`${API_URL}/api/classes/${classId}/students/${studentId}`, {
+                    method: 'DELETE'
+                });
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    alert('✓ Đã xóa sinh viên khỏi lớp');
+                    closeModal('class-students-modal');
+                    loadClasses();
+                } else {
+                    alert('✗ Lỗi: ' + data.detail);
+                }
+            } catch (error) {
+                alert('✗ Lỗi: ' + error.message);
+            }
+        }
+
+        async function deleteClass(classId) {
+            if (!confirm('Bạn có chắc muốn xóa lớp học này?')) return;
+
+            try {
+                const response = await fetch(`${API_URL}/api/classes/${classId}`, {
+                    method: 'DELETE'
+                });
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    alert('✓ Đã xóa lớp học');
+                    loadClasses();
+                    loadClassesForSelect();
+                } else {
+                    alert('✗ Lỗi: ' + data.detail);
+                }
+            } catch (error) {
+                alert('✗ Lỗi: ' + error.message);
+            }
+        }
+
+        // ===================================
+        // SESSION & ATTENDANCE
+        // ===================================
+        let currentSessionId = null;
+        let currentClassId = null;
+        let attendanceInterval = null;
+
+        function showStartSessionModal() {
+            loadClassesForSelect();
+            document.getElementById('start-session-modal').classList.add('active');
+        }
+
+        async function startSession() {
+            const classId = document.getElementById('session-class-select').value;
+            const sessionName = document.getElementById('session-name').value;
+
+            if (!classId || !sessionName) {
+                alert('Vui lòng chọn lớp và nhập tên phiên!');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/sessions/start`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({class_id: classId, session_name: sessionName})
+                });
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    alert('✓ Đã bắt đầu điểm danh!');
+                    currentSessionId = data.session_id;
+                    currentClassId = data.class_id;
+                    closeModal('start-session-modal');
+                    checkSessionStatus();
+                    startAttendancePolling();
+                } else {
+                    alert('✗ Lỗi: ' + data.message);
+                }
+            } catch (error) {
+                alert('✗ Lỗi: ' + error.message);
+            }
+        }
+
+        async function endCurrentSession() {
+            if (!currentSessionId) return;
+
+            if (!confirm('Bạn có chắc muốn kết thúc phiên điểm danh?')) return;
+
+            try {
+                const response = await fetch(`${API_URL}/api/sessions/${currentSessionId}/end`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    alert('✓ Đã kết thúc phiên điểm danh!');
+                    currentSessionId = null;
+                    currentClassId = null;
+                    stopAttendancePolling();
+                    checkSessionStatus();
+                } else {
+                    alert('✗ Lỗi: ' + data.message);
+                }
+            } catch (error) {
+                alert('✗ Lỗi: ' + error.message);
+            }
+        }
+
+        async function checkSessionStatus() {
+            try {
+                const response = await fetch(`${API_URL}/api/sessions/current`);
+                const data = await response.json();
+
+                const statusDiv = document.getElementById('session-status');
+
+                if (data.active) {
+                    currentSessionId = data.session_id;
+                    currentClassId = data.class_id;
+                    statusDiv.className = 'session-info';
+                    statusDiv.innerHTML = `
+                        <div>
+                            <strong>Đang điểm danh:</strong> ${data.session.session_name}
+                            <br><small>Lớp: ${data.class_id}</small>
+                        </div>
+                        <div>
+                            <button class="btn btn-danger" onclick="endCurrentSession()">Kết thúc</button>
+                        </div>
+                    `;
+                    startAttendancePolling();
+                } else {
+                    currentSessionId = null;
+                    currentClassId = null;
+                    statusDiv.className = 'session-info inactive';
+                    statusDiv.innerHTML = `
+                        <div><strong>Trạng thái:</strong> Chưa bắt đầu</div>
+                        <div><button class="btn btn-success" onclick="showStartSessionModal()">Bắt đầu điểm danh</button></div>
+                    `;
+                    stopAttendancePolling();
+                }
+            } catch (error) {
+                console.error('Error checking session status:', error);
+            }
+        }
+
+        async function loadAttendanceData() {
+            if (!currentSessionId) return;
+
+            try {
+                const response = await fetch(`${API_URL}/api/sessions/${currentSessionId}/attendances`);
+                const data = await response.json();
+
+                // Stats
+                const statsDiv = document.getElementById('attendance-stats');
+                statsDiv.innerHTML = `
+                    <h3 style="font-size:32px;color:var(--success);margin-bottom:8px;">${data.attendances.length}</h3>
+                    <p>Sinh viên đã điểm danh</p>
+                `;
+
+                // List
+                const listDiv = document.getElementById('attended-list');
+                if (data.attendances.length === 0) {
+                    listDiv.innerHTML = '<p>Chưa có ai điểm danh</p>';
+                } else {
+                    let html = '<table style="width:100%"><thead><tr><th>Mã SV</th><th>Họ tên</th><th>Thời gian</th></tr></thead><tbody>';
+                    data.attendances.forEach(att => {
+                        const time = new Date(att.timestamp).toLocaleTimeString('vi-VN');
+                        html += `
+                            <tr>
+                                <td>${att.student_id}</td>
+                                <td>${att.name}</td>
+                                <td>${time}</td>
+                            </tr>
+                        `;
+                    });
+                    html += '</tbody></table>';
+                    listDiv.innerHTML = html;
+                }
+            } catch (error) {
+                console.error('Error loading attendance data:', error);
+            }
+        }
+
+        function startAttendancePolling() {
+            if (attendanceInterval) clearInterval(attendanceInterval);
+            loadAttendanceData(); // Load immediately
+            attendanceInterval = setInterval(loadAttendanceData, 2000); // Poll every 2s
+        }
+
+        function stopAttendancePolling() {
+            if (attendanceInterval) {
+                clearInterval(attendanceInterval);
+                attendanceInterval = null;
+            }
+            document.getElementById('attendance-stats').innerHTML = '<p>Chưa có phiên điểm danh</p>';
+            document.getElementById('attended-list').innerHTML = '<p>Chưa có dữ liệu</p>';
+        }
+
+        // ===================================
+        // REPORTS
+        // ===================================
+        async function loadClassSessions() {
+            const classId = document.getElementById('report-class-select').value;
+            if (!classId) {
+                document.getElementById('sessions-list').innerHTML = '';
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/api/classes/${classId}/sessions`);
+                const data = await response.json();
+
+                const listDiv = document.getElementById('sessions-list');
+
+                if (data.sessions.length === 0) {
+                    listDiv.innerHTML = '<p>Chưa có phiên điểm danh nào</p>';
+                } else {
+                    let html = '<table style="width:100%"><thead><tr><th>Tên phiên</th><th>Thời gian</th><th>Số SV</th><th>Trạng thái</th><th>Hành động</th></tr></thead><tbody>';
+                    data.sessions.forEach(session => {
+                        const time = new Date(session.created_at).toLocaleString('vi-VN');
+                        const status = session.status === 'active' ? 
+                            '<span class="badge badge-success">Đang diễn ra</span>' : 
+                            '<span class="badge badge-danger">Đã kết thúc</span>';
+                        html += `
+                            <tr>
+                                <td>${session.session_name}</td>
+                                <td>${time}</td>
+                                <td>${session.attendance_count}</td>
+                                <td>${status}</td>
+                                <td><button class="btn btn-primary" onclick="viewSessionReport('${session._id}')">Xem báo cáo</button></td>
+                            </tr>
+                        `;
+                    });
+                    html += '</tbody></table>';
+                    listDiv.innerHTML = html;
+                }
+            } catch (error) {
+                console.error('Error loading sessions:', error);
+            }
+        }
+
+        async function viewSessionReport(sessionId) {
+            try {
+                const response = await fetch(`${API_URL}/api/sessions/${sessionId}/report`);
+                const data = await response.json();
+
+                const report = data.report;
+                let html = `
+                    <h3>Báo cáo chi tiết</h3>
+                    <p><strong>Tổng số SV:</strong> ${report.total_students}</p>
+                    <p><strong>Có mặt:</strong> ${report.present_count} <span class="badge badge-success">${Math.round(report.present_count/report.total_students*100)}%</span></p>
+                    <p><strong>Vắng mặt:</strong> ${report.absent_count} <span class="badge badge-danger">${Math.round(report.absent_count/report.total_students*100)}%</span></p>
+                    
+                    <h4>Danh sách có mặt</h4>
+                    <table style="width:100%"><thead><tr><th>Mã SV</th><th>Họ tên</th><th>Thời gian</th></tr></thead><tbody>
+                `;
+
+                report.present.forEach(s => {
+                    const time = new Date(s.timestamp).toLocaleTimeString('vi-VN');
+                    html += `<tr><td>${s.student_id}</td><td>${s.name}</td><td>${time}</td></tr>`;
+                });
+
+                html += `</tbody></table><h4>Danh sách vắng mặt</h4><table style="width:100%"><thead><tr><th>Mã SV</th><th>Họ tên</th></tr></thead><tbody>`;
+
+                report.absent.forEach(s => {
+                    html += `<tr><td>${s.student_id}</td><td>${s.name}</td></tr>`;
+                });
+
+                html += '</tbody></table>';
+
+                alert(html); // Simple alert, you can create a modal for this
+            } catch (error) {
+                alert('✗ Lỗi: ' + error.message);
+            }
+        }
+
+        // ===================================
+        // MODAL
+        // ===================================
+        function closeModal(modalId) {
+            document.getElementById(modalId).classList.remove('active');
+        }
+
+        // Close modal on background click
+        document.querySelectorAll('.modal').forEach(modal => {
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    modal.classList.remove('active');
+                }
+            });
+        });
+
+        // ===================================
+        // INIT
+        // ===================================
+        document.addEventListener('DOMContentLoaded', () => {
+            loadStudents();
+            loadStudentsForSelect();
+            checkSessionStatus();
+        });
+    </script>
+</body>
+</html>
