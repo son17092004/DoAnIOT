@@ -5,7 +5,7 @@ Backend API cho Hệ thống Điểm danh IoT với Face Recognition & Anti-Spoo
 - Database: MongoDB
 - APIs: Student, Class, Session, Attendance Management
 """
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
@@ -121,6 +121,39 @@ def auto_end_session_after_duration(session_id: str, duration_minutes: int):
             CURRENT_CLASS_ID = None
 
 
+# IP of the ESP32-CAM (registered via UDP discovery or HTTP upload)
+ESP32_CAM_IP = None
+
+
+def start_udp_broadcast_listener():
+    import socket
+    def listener():
+        global ESP32_CAM_IP
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Cho phép sử dụng lại địa chỉ/cổng để tránh bị lỗi "Address already in use"
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("", 12345))
+            print("✓ UDP Broadcast Server listening on port 12345 for auto-discovery")
+            while True:
+                data, addr = sock.recvfrom(1024)
+                message = data.decode("utf-8", errors="ignore").strip()
+                if message.startswith("WHERE_IS_THE_SERVER"):
+                    print(f"[UDP Broadcast] Received discovery request from {addr[0]}:{addr[1]} ({message})")
+                    sock.sendto("I_AM_THE_SERVER".encode("utf-8"), addr)
+                    
+                    if message == "WHERE_IS_THE_SERVER_CAM":
+                        ESP32_CAM_IP = addr[0]
+                        print(f"[UDP Broadcast] Registered ESP32-CAM IP: {ESP32_CAM_IP}")
+        except Exception as e:
+            print(f"✗ UDP Broadcast Server error: {e}")
+        finally:
+            sock.close()
+
+    thread = threading.Thread(target=listener, daemon=True)
+    thread.start()
+
+
 # ===================================
 # STARTUP
 # ===================================
@@ -142,6 +175,9 @@ def startup():
             print("⚠ Anti-Spoofing Model failed to load")
     else:
         print(f"⚠ Model file not found: {MODEL_PATH}")
+    
+    # Khởi động UDP broadcast auto-discovery
+    start_udp_broadcast_listener()
 
 
 # ===================================
@@ -574,12 +610,17 @@ def api_toggle_anti_spoof(request: dict):
 # ===================================
 
 @app.post("/api/recognize")
-async def api_recognize_face(file: UploadFile = File(...)):
+async def api_recognize_face(request: Request, file: UploadFile = File(...)):
     """
     Endpoint nhận ảnh từ ESP32-CAM và nhận diện khuôn mặt
     Tự động điểm danh nếu có session active
     """
-    global CURRENT_SESSION_ID, ANTISPOOF_MODEL, ANTI_SPOOF_ENABLED, LAST_RECOGNITION_RESULT
+    global CURRENT_SESSION_ID, ANTISPOOF_MODEL, ANTI_SPOOF_ENABLED, LAST_RECOGNITION_RESULT, ESP32_CAM_IP
+    
+    # Cập nhật IP của camera từ yêu cầu HTTP này để dự phòng
+    if request.client:
+        ESP32_CAM_IP = request.client.host
+        print(f"[HTTP Request] Updated ESP32-CAM IP from upload: {ESP32_CAM_IP}")
     
     # Kiểm tra có session active không
     if not CURRENT_SESSION_ID:
@@ -796,6 +837,19 @@ def api_get_latest_result():
     """
     with RECOGNITION_LOCK:
         return LAST_RECOGNITION_RESULT
+
+
+@app.get("/api/camera/stream_url")
+def api_get_camera_stream_url():
+    """
+    Lấy URL livestream của camera ESP32-CAM (được phát hiện tự động)
+    """
+    global ESP32_CAM_IP
+    return {
+        "status": "success",
+        "ip": ESP32_CAM_IP,
+        "url": f"http://{ESP32_CAM_IP}:81/stream" if ESP32_CAM_IP else None
+    }
 
 
 @app.get("/api/images/all")

@@ -879,6 +879,7 @@
                 } else if (tabName === 'attendance') {
                     checkSessionStatus();
                     loadAntiSpoofStatus();
+                    checkCameraStreamUrl();
                 } else if (tabName === 'spoofs') {
                     loadSpoofAttempts();
                 } else if (tabName === 'gallery') {
@@ -1855,12 +1856,32 @@
             status.style.color = '#64748b';
         }
         
-        // Auto-connect nếu có URL đã lưu
-        window.addEventListener('load', function() {
+        async function checkCameraStreamUrl() {
+            try {
+                const statusText = document.getElementById('camera-status').textContent;
+                if (!statusText.includes('Đang stream')) {
+                    const response = await fetch(`${API_URL}/api/camera/stream_url`);
+                    const data = await response.json();
+                    if (data.status === 'success' && data.url) {
+                        console.log("[Auto-discovery] Found camera stream URL from backend:", data.url);
+                        document.getElementById('camera-url').value = data.url;
+                        connectCamera();
+                    }
+                }
+            } catch (err) {
+                console.error("Failed to check camera stream URL:", err);
+            }
+        }
+
+        // Auto-connect nếu có URL đã lưu hoặc lấy từ backend qua UDP discovery
+        window.addEventListener('load', async function() {
             const savedUrl = localStorage.getItem('camera_stream_url');
             if (savedUrl) {
                 document.getElementById('camera-url').value = savedUrl;
             }
+            
+            // Tự động lấy URL từ backend qua UDP
+            await checkCameraStreamUrl();
         });
 
         // ===================================

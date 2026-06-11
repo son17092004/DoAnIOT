@@ -27,22 +27,91 @@
 #include <ArduinoJson.h>
 #include <esp_now.h>
 #include <esp_wifi.h> // Thêm để có wifi_tx_info_t cho ESP32 Core v3.x
+#include <WiFiUdp.h>
 
 // Hardware Pins
 #define RADAR_OUT   4
 #define SPEAKER_PIN 25  // Buzzer nối vào GPIO 25
 
+// LCD (Khai báo trước để dùng trong discoverServerIP)
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
 // WiFi Settings (cần để lấy MAC và nhận kết quả từ server)
 const char* ssid = "conmeo";
 const char* password = "meomeomeo";
-const char* serverUrlResult = "http://192.168.252.107:8080/api/result/latest";
+
+String serverUrlResult = "http://10.232.98.107:8080/api/result/latest"; // Sẽ được cập nhật động
+String serverIPStr = "10.232.98.107";
+
+WiFiUDP udp;
+const int udpPort = 12345;
+
+bool discoverServerIP() {
+  Serial.println("[UDP] Dang do tim IP server qua UDP Broadcast...");
+  
+  // Hiển thị lên LCD khi đang dò tìm
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("DANG DO TIM IP  ");
+  lcd.setCursor(0, 1);
+  lcd.print("SERVER BACKEND..");
+  
+  udp.begin(udpPort);
+  
+  // Gửi gói tin Broadcast (255.255.255.255) tới port 12345
+  IPAddress broadcastIP(255, 255, 255, 255);
+  udp.beginPacket(broadcastIP, udpPort);
+  udp.print("WHERE_IS_THE_SERVER");
+  udp.endPacket();
+  
+  // Chờ phản hồi trong tối đa 3 giây
+  unsigned long startTime = millis();
+  while (millis() - startTime < 3000) {
+    int packetSize = udp.parsePacket();
+    if (packetSize) {
+      char replyBuffer[64];
+      int len = udp.read(replyBuffer, sizeof(replyBuffer) - 1);
+      if (len > 0) {
+        replyBuffer[len] = '\0';
+        String reply = String(replyBuffer);
+        reply.trim();
+        if (reply == "I_AM_THE_SERVER") {
+          serverIPStr = udp.remoteIP().toString();
+          serverUrlResult = "http://" + serverIPStr + ":8080/api/result/latest";
+          Serial.print("[UDP] Da tim thay server backend! IP: ");
+          Serial.println(serverIPStr);
+          Serial.print("[UDP] URL Result: ");
+          Serial.println(serverUrlResult);
+          
+          lcd.clear();
+          lcd.setCursor(0, 0);
+          lcd.print("TIM THAY SERVER!");
+          lcd.setCursor(0, 1);
+          lcd.print(serverIPStr);
+          delay(1000);
+          
+          udp.stop();
+          return true;
+        }
+      }
+    }
+    delay(50);
+  }
+  
+  udp.stop();
+  Serial.println("[UDP] Khong tim thay server backend!");
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("KHONG THAY SERVER");
+  lcd.setCursor(0, 1);
+  lcd.print("Dung IP mac dinh");
+  delay(1500);
+  return false;
+}
 
 // MAC Address của ESP32-CAM (cần cập nhật sau khi chạy get_mac_address.ino)
 // Ví dụ: {0x24, 0x6F, 0x28, 0xAA, 0xBB, 0xCC}
 uint8_t camMacAddress[] = {0x80, 0xF3, 0xDA, 0x5F, 0xEC, 0x44}; // ⚠️ CẬP NHẬT MAC ADDRESS ESP32-CAM TẠI ĐÂY
-
-// LCD
-LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 // State Management
 enum SystemState {
@@ -135,6 +204,9 @@ void setup() {
     Serial.println("\nWiFi connected");
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
+    
+    // Tự động tìm IP server backend ngay sau khi kết nối WiFi thành công
+    discoverServerIP();
   } else {
     Serial.println("\nWiFi connection failed! Continuing without WiFi...");
   }
@@ -492,7 +564,12 @@ void loop() {
         } 
         else if (httpResponseCode == -1) {
           // Timeout hoặc không kết nối được
-          Serial.println("HTTP timeout or connection failed");
+          Serial.println("HTTP timeout or connection failed! Trying to re-discover server...");
+          static unsigned long lastDiscoverAttempt = 0;
+          if (now - lastDiscoverAttempt > 8000) { // Giới hạn tần suất dò tìm lại
+            discoverServerIP();
+            lastDiscoverAttempt = now;
+          }
         }
         else {
           // HTTP error khác

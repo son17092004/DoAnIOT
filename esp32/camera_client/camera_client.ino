@@ -22,6 +22,7 @@
 #include <HTTPClient.h>
 #include <esp_now.h>
 #include "esp_http_server.h"
+#include <WiFiUdp.h>
 
 // ==========================================
 // CONFIGURATION - Cấu hình hệ thống
@@ -31,15 +32,58 @@
 const char* ssid = "conmeo";
 const char* password = "meomeomeo";
 
-// Static IP Configuration - IP tĩnh (KHÔNG thay đổi khi restart)
-IPAddress local_IP(192, 168, 252, 200);      // IP cố định cho ESP32-CAM
-IPAddress gateway(192, 168, 252, 1);         // Gateway của router
-IPAddress subnet(255, 255, 255, 0);          // Subnet mask
-IPAddress primaryDNS(8, 8, 8, 8);            // Google DNS
+// Static IP Configuration - Đã tắt để tự động nhận IP (DHCP)
+// IPAddress local_IP(192, 168, 252, 200);      // IP cố định cho ESP32-CAM
+// IPAddress gateway(192, 168, 252, 1);         // Gateway của router
+// IPAddress subnet(255, 255, 255, 0);          // Subnet mask
+// IPAddress primaryDNS(8, 8, 8, 8);            // Google DNS
 
 // Backend server
-const char* serverHost = "192.168.252.107";  // IP máy chạy backend
+String serverHost = "10.232.98.107";  // IP máy chạy backend (sẽ tự động cập nhật qua UDP Broadcast)
 const int serverPort = 8080;
+
+WiFiUDP udp;
+const int udpPort = 12345;
+bool serverIPDiscovered = false;
+
+bool discoverServerIP() {
+  Serial.println("[UDP] Dang do tim IP server qua UDP Broadcast...");
+  udp.begin(udpPort);
+  
+  // Gửi gói tin Broadcast (255.255.255.255) tới port 12345
+  IPAddress broadcastIP(255, 255, 255, 255);
+  udp.beginPacket(broadcastIP, udpPort);
+  udp.print("WHERE_IS_THE_SERVER_CAM");
+  udp.endPacket();
+  
+  // Chờ phản hồi trong tối đa 3 giây
+  unsigned long startTime = millis();
+  while (millis() - startTime < 3000) {
+    int packetSize = udp.parsePacket();
+    if (packetSize) {
+      char replyBuffer[64];
+      int len = udp.read(replyBuffer, sizeof(replyBuffer) - 1);
+      if (len > 0) {
+        replyBuffer[len] = '\0';
+        String reply = String(replyBuffer);
+        reply.trim();
+        if (reply == "I_AM_THE_SERVER") {
+          serverHost = udp.remoteIP().toString();
+          serverIPDiscovered = true;
+          Serial.print("[UDP] Da tim thay server backend! IP: ");
+          Serial.println(serverHost);
+          udp.stop();
+          return true;
+        }
+      }
+    }
+    delay(50);
+  }
+  
+  udp.stop();
+  Serial.println("[UDP] Khong tim thay server backend (Het thoi gian cho)!");
+  return false;
+}
 
 // Pin definitions cho AI THINKER Model
 #define PWDN_GPIO_NUM     32
@@ -183,7 +227,7 @@ void startCameraServer(){
  */
 void onDataRecv(const esp_now_recv_info *recv_info, const uint8_t *data, int len) {
   if (len >= 1 && data[0] == 0x01) {  // 0x01 = Trigger command
-    Serial.println("[ESP-NOW] Trigger received from LCD!");
+    Serial.println("[ESP-NOW] Trigger received from LCD!");     
     triggerReceived = true;
     
     // Gửi ACK về ESP32 LCD để xác nhận đã nhận
@@ -208,7 +252,7 @@ void setup() {
   pinMode(FLASH_LED_PIN, OUTPUT);
   digitalWrite(FLASH_LED_PIN, LOW);
   
-  // ===== WiFi Setup với Static IP =====
+  // ===== WiFi Setup với DHCP =====
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   delay(100);
@@ -217,10 +261,12 @@ void setup() {
   Serial.print("[WiFi] MAC Address: ");
   Serial.println(WiFi.macAddress());
   
-  // Cấu hình Static IP TRƯỚC KHI connect WiFi
+  // Cấu hình Static IP - Đã tắt để tự động nhận IP (DHCP)
+  /*
   if (!WiFi.config(local_IP, gateway, subnet, primaryDNS)) {
     Serial.println("[WiFi] ERROR: Static IP config failed!");
   }
+  */
   
   // Kết nối WiFi
   Serial.print("[WiFi] Connecting to: ");
@@ -236,11 +282,12 @@ void setup() {
   
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\n[WiFi] ✓ Connected!");
-    Serial.print("[WiFi] Static IP: ");
+    Serial.print("[WiFi] IP: ");
     Serial.println(WiFi.localIP());
-    Serial.print("[WiFi] Gateway: ");
-    Serial.println(WiFi.gatewayIP());
     Serial.println("[WiFi] Stream URL: http://" + WiFi.localIP().toString() + ":81/stream");
+    
+    // Tự động tìm IP server backend ngay sau khi kết nối WiFi thành công
+    discoverServerIP();
   } else {
     Serial.println("\n[WiFi] ✗ Connection FAILED!");
     // Có thể tiếp tục với ESP-NOW nhưng không thể upload/stream
@@ -461,8 +508,21 @@ void captureAndUpload() {
   }
   
   WiFiClient client;
-  if (client.connect(serverHost, serverPort)) {
-    Serial.println("[Upload] Uploading to server...");
+  // Thử kết nối, nếu thất bại thì thử tìm lại IP server qua UDP Broadcast (phòng trường hợp server đổi IP)
+  if (!client.connect(serverHost.c_str(), serverPort)) {
+    Serial.println("[Upload] ✗ Failed to connect to server! Trying to re-discover...");
+    if (discoverServerIP()) {
+      if (!client.connect(serverHost.c_str(), serverPort)) {
+        Serial.println("[Upload] ✗ Still failed to connect to discovered server!");
+        esp_camera_fb_return(fb);
+        return;
+      }
+    } else {
+      esp_camera_fb_return(fb);
+      return;
+    }
+  }
+  Serial.println("[Upload] Uploading to server...");
     
     // HTTP multipart/form-data boundary
     String boundary = "----ESP32CAMBoundary1234567890";
@@ -531,10 +591,6 @@ void captureAndUpload() {
     
     client.stop();
     Serial.printf("[Upload] ✓ Completed in %lu ms\n", millis() - startTime);
-    
-  } else {
-    Serial.println("[Upload] ✗ Failed to connect to server!");
-  }
   
   // Giải phóng memory
   esp_camera_fb_return(fb);
